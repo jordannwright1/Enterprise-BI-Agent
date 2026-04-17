@@ -1,0 +1,5 @@
+.env
+venv
+navi_outputs
+tools
+__pycache__/
