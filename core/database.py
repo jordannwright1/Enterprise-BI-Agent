@@ -42,11 +42,15 @@ def save_skill(keyword, task, code, packages):
 def get_skill(keyword):
     init_db() 
     conn = get_db_connection()
+    conn.row_factory = sqlite3.Row 
     cursor = conn.cursor()
     try:
         cursor.execute('SELECT code, packages FROM skills WHERE keyword = ?', (keyword,))
         result = cursor.fetchone()
-        return result
+        
+        # Convert the Row object into a real dictionary if it exists
+        return dict(result) if result else None
+        
     finally:
         conn.close()
 

@@ -73,6 +73,19 @@ def extract_clean_code(content: str) -> str:
 
     return "\n".join(clean_lines).strip()
 
+import subprocess
+import sys
+
+def ensure_packages(package_list):
+    """Installs missing packages via pip."""
+    for package in package_list:
+        try:
+            # Check if package is already available
+            __import__(package.replace('-', '_'))
+        except ImportError:
+            print(f"📦 System: Installing missing dependency: {package}...")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+
 
 def extract_section(text, section_header):
     """
@@ -152,6 +165,32 @@ def planner_node(state: NaviState):
     # DEFAULT (Initial Start)
     return {"plan": plan + ["### 🛠️ ACTION: CODE"], "retry_count": 0}
 
+def extract_dependencies(code):
+    # 1. Extract all top-level imports and 'from x import y'
+    # Pattern looks for 'import pkg' or 'from pkg ...'
+    raw_imports = re.findall(r"^(?:import|from)\s+([a-zA-Z0-9_]+)", code, re.MULTILINE)
+    
+    # 2. Define a map for packages where the import name != pip install name
+    package_map = {
+        "bs4": "beautifulsoup4",
+        "PIL": "Pillow",
+        "sklearn": "scikit-learn",
+        "yaml": "pyyaml"
+    }
+    
+    # 3. Filter out Python Standard Library modules (so we don't try to 'pip install os')
+    # Use sys.stdlib_module_names (Python 3.10+)
+    std_libs = sys.stdlib_module_names if hasattr(sys, 'stdlib_module_names') else []
+    
+    final_packages = []
+    for imp in set(raw_imports):
+        # Map to pip name, or keep original
+        pkg = package_map.get(imp, imp)
+        # Only include if it's not a built-in standard library
+        if pkg not in std_libs and pkg != 'execute_tool':
+            final_packages.append(pkg)
+            
+    return final_packages
 
 def research_node(state: NaviState):
     task = state.get("task", "Unknown Task")
@@ -320,14 +359,11 @@ def skill_creator_node(state: NaviState):
         ast.parse(code)
         
         # --- DYNAMIC DEPENDENCY & SAVING ---
-        raw_imports = re.findall(r"^(?:import|from)\s+([a-zA-Z0-9_]+)", code, re.MULTILINE)
-        package_map = {"bs4": "beautifulsoup4", "PIL": "Pillow"}
         
-        final_packages = list(set(package_map.get(imp, imp) for imp in raw_imports if imp not in sys.modules))
-        
-        # Ensure 'requests' and 'beautifulsoup4' are present for scraping tasks
-        if "requests" not in final_packages: final_packages.append("requests")
-        if "beautifulsoup4" not in final_packages: final_packages.append("beautifulsoup4")
+        final_packages = extract_dependencies(code)
+
+        if final_packages:
+            ensure_packages(final_packages)
 
         # COMMIT TO DATABASE
         task_id = get_skill_name(task)
@@ -395,9 +431,9 @@ if __name__ == "__main__":
 
     # 2. ENCODE & PREPARE
     encoded_payload = base64.b64encode(full_script.encode('utf-8')).decode('utf-8')
-    pkg_list = " ".join(packages) if packages else ""
-    install_cmd = f"pip install --no-cache-dir {pkg_list} --quiet &&" if pkg_list else ""
-    docker_command = f"{install_cmd} echo \"{encoded_payload}\" | base64 -d | python3"
+    pkg_str = " ".join(packages)
+    install_cmd = f"pip install --no-cache-dir {pkg_str} --quiet --root-user-action=ignore &&"
+    docker_command = f"{install_cmd} echo {encoded_payload} | base64 -d | python3"
 
     print(f"\n{'='*20} DOCKER START {'='*20}")
     container = None
