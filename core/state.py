@@ -13,14 +13,14 @@ class NaviState(TypedDict):
     inventory: List[str]
     discovery_data: str
     # The code for a tool being currently built/refined
-    generated_tool_code: Optional[str]
+    generated_tool_code: str
     # Last error message encountered during execution
-    last_error: Optional[str]
+    last_error: str
     # Counter for the self-learning loop (max 5)
     retry_count: int
     # Safety flag for Human-in-the-loop
     user_approved: bool
     past_strategies: Annotated[List[str], operator.add]
     # Final output to the user
-    final_answer: Optional[str]
+    final_answer: str
     packages: List[str]

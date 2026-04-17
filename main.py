@@ -11,6 +11,21 @@ import sqlite3
 load_dotenv()
 init_db()
 
+
+import base64
+from PIL import Image
+import io
+
+def display_navi_chart(b64_string):
+    try:
+        # Strip potential whitespace or markers
+        img_data = base64.b64decode(b64_string.strip())
+        img = Image.open(io.BytesIO(img_data))
+        st.image(img, caption="Navi's Generated Analysis", use_container_width=True)
+    except Exception as e:
+        st.error(f"Could not render chart: {e}")
+
+
 def inspect_skills():
     conn = sqlite3.connect("tools/navi_skills.db")
     cursor = conn.cursor()
@@ -135,8 +150,25 @@ if prompt := st.chat_input("Assign a task to Navi..."):
             
             status.update(label="Process Finished", state="complete", expanded=False)
 
-        if final_ans:
-            st.markdown(final_ans)
-            st.session_state.messages.append({"role": "assistant", "content": final_ans})
-        else:
-            st.error("Navi finished without a final answer. Check your Docker logs or 'core/graph.py' logic.")
+        import re
+
+    if final_ans:
+      b64_match = re.search(r"(iVBORw0KGgoAAAANSUhEUg[\w\+\/\s\n=]+)", final_ans)
+
+    if b64_match:
+        # 1. Extract the image string
+        chart_data = b64_match.group(1).strip()
+        
+        # 2. Clean the text (remove the giant string so we can display the words)
+        # We replace the giant string with an empty space in the display text
+        display_text = final_ans.replace(chart_data, "").replace("Figure:", "").strip()
+        
+        st.markdown(display_text)
+        display_navi_chart(chart_data)
+        
+        # Save clean text to session
+        st.session_state.messages.append({"role": "assistant", "content": display_text})
+    else:
+        # Standard display if no image string is found
+        st.markdown(final_ans)
+        st.session_state.messages.append({"role": "assistant", "content": final_ans})

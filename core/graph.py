@@ -121,8 +121,8 @@ def planner_node(state: NaviState):
     # helper for scannability
     last_step = str(plan[-1]).upper() if plan else ""
 
-    if final_ans_raw and not last_error:
-        return {"plan": plan + ["### 📢 ACTION: SUMMARIZE"]}
+    if final_ans_raw and not last_error and "occurred" not in str(final_ans_raw).lower():
+        return {"plan": state.get("plan", []) + ["### 📢 ACTION: SUMMARIZE"]}
 
     if last_error:
         if retry_count < 1:
@@ -235,7 +235,7 @@ def research_node(state: NaviState):
     """
 
     try:
-        response = llm_pro.invoke(reasoning_prompt).content.strip()
+        response = llm_fast.invoke(reasoning_prompt).content.strip()
         new_strategy = extract_section(response, "### NEW_STRATEGY_NAME")
         
         return {
@@ -271,6 +271,14 @@ def skill_creator_node(state: NaviState):
         
         ### RESEARCH NOTES & RECOMMENDED FIX:
         {research_notes}
+
+        ### TASK CONTEXT
+        {task}
+
+        ### PREVIOUS ATTEMPT
+        {previous_code}
+
+        ### RESEARCHER'S RECOMMENDATION
 
         When calculating averages, always check if the list is empty first to avoid ZeroDivisionError. Example: avg = sum(vals)/len(vals) if vals else 0.
         
@@ -337,6 +345,10 @@ def skill_creator_node(state: NaviState):
     4. Avoid the previous error: {last_error}
     5. TRANSLATE SELECTORS: If the Researcher provided Scrapy-style code (response.css or yield), translate it to BeautifulSoup (soup.select or soup.find) and ensure the function returns a string.
 
+    When plotting in Docker, always use plt.switch_backend('Agg') and save the figure to a io.BytesIO buffer before encoding to base64.
+
+    When generating visuals, always encode them as base64 strings.  Use the style, plt.style.use('ggplot').
+
 
     ### FINAL TOOL STRUCTURE
     ```python
@@ -349,7 +361,7 @@ def skill_creator_node(state: NaviState):
     ```
     """
 
-    response = llm_pro.invoke(prompt)
+    response = llm_fast.invoke(prompt)
     code = extract_clean_code(response.content)
 
     if not code:
@@ -467,7 +479,7 @@ if __name__ == "__main__":
             extracted_data = match.group(1).strip()
             
             # --- VALIDATION: SHORT/EMPTY DATA ---
-            if len(extracted_data) < 10 and "error" not in extracted_data.lower():
+            if len(extracted_data) < 30 and "error" not in extracted_data.lower():
                 return {
                     "last_error": "### ⚠️ Logic Failure\nExtracted data was too short or empty.",
                     "final_answer": None,
@@ -478,14 +490,13 @@ if __name__ == "__main__":
             # --- VALIDATION: SOFT ERRORS (Logic/Scraping Failure) ---
             soft_error_keywords = [
             "failed to", "error:", "none type", "empty", 
-            "none", "not found", "division by zero"
+            "none", "not found", "division by zero", "an error occurred:", "syntax error", "invalid syntax", "exception"
           ]
             if any(k in extracted_data.lower() for k in soft_error_keywords):
                 print("⚠️ Logic Failure detected in extracted data. Re-routing to Planner.")
                 return {
                     "last_error": f"### ⚠️ Logic Failure\n{extracted_data}",
                     "final_answer": None,
-                    "generated_tool_code": None, # Force re-generation
                     "retry_count": retry_count,
                     "plan": current_plan + ["### ⚠️ Execution Logic Failed"]
                 }
@@ -497,7 +508,7 @@ if __name__ == "__main__":
                 "last_error": None,
                 "retry_count": retry_count,
                 "generated_tool_code": state.get("generated_tool_code"),
-                "plan": ["### ✅ Execution Success"]
+                "plan": state.get("plan", []) + ["### ✅ Execution Success"]
             }
 
         # 4. FAILURE PATH (No Markers = Crash)
@@ -559,16 +570,11 @@ def summarizer_node(state: NaviState):
     R-squared: 1.00
     Predicted Revenue for 50,000 Marketing Spend: 400.65
     """
-    
-    try:
-        natural_response = llm_fast.invoke(format_prompt).content.strip()
-        return {
+    natural_response = llm_fast.invoke(format_prompt).content.strip()
+    return {
             "final_answer": natural_response,
             "plan": ["### ✅ COMPLETE"]
         }
-    except:
-        # Fallback if LLM fails
-        return {"plan": ["### ✅ COMPLETE"]}
 
 # --- Conditional Routing Logic ---
 def route_after_plan(state: NaviState):
@@ -587,16 +593,20 @@ def route_after_plan(state: NaviState):
 
 
 def route_after_execution(state: NaviState):
-    """
-    This ensures that if the Executor returned a last_error, 
-    we go back to the Planner, NOT the Summarizer.
-    """
     last_err = state.get("last_error")
+    raw_ans = str(state.get("final_answer", "")).lower()
     
-    if last_err:
-        print(f"🔄 Router: Error detected ({last_err[:30]}...). Returning to Planner.")
+    # If the node flagged an error OR the string looks like an error
+    if last_err or "error occurred" in raw_ans or "occurred" in raw_ans:
+        print(f"🎯 Router: Redirecting to Planner for error handling.")
         return "planner"
+    
+    if state.get("final_answer"):
+        print("✅ Router: Success detected. Sending to summarizer.")
+        return "summarizer"
+        
     return "planner"
+
 
 # --- Graph Construction ---
 workflow = StateGraph(NaviState)
@@ -622,11 +632,18 @@ workflow.add_conditional_edges(
         
     }
 )
-
+workflow.add_edge("research", "skill_creation")
 # Technical Loop
 workflow.add_edge("skill_creation", "executor")
-workflow.add_edge("executor", "planner") # Return to Planner to check results
-workflow.add_edge("research", "planner") # Return to Planner to apply research
+workflow.add_conditional_edges(
+    "executor", 
+    route_after_execution, 
+    {
+        "planner": "planner",
+        "summarizer": "summarizer"
+        
+    }
+)
 
 # Terminal Edge
 workflow.add_edge("summarizer", END)
