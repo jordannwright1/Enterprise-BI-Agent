@@ -10,7 +10,6 @@ import subprocess
 import sys
 import groq
 from importlib import metadata
-import docker
 import sqlite3
 from tools.base_search import search
 import ast
