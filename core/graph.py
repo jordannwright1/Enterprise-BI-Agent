@@ -11,7 +11,6 @@ import sys
 import groq
 from importlib import metadata
 import sqlite3
-from tools.base_search import search
 import ast
 from core.database import get_skill, save_skill, init_db
 
