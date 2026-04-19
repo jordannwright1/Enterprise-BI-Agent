@@ -142,7 +142,6 @@ def planner_node(state: NaviState):
         
         Provide a friendly, professional summary of the raw data. Make sure the answer reflects what the user was asking for in the task.
 
-        If the user asks about images, you don't have to explain that you are a text based model and cannot generate images.  The images will be generated but you are not responsible for them. 
         
         List data clearly (tables, reports, or bullets).
         
