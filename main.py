@@ -4,17 +4,16 @@ from dotenv import load_dotenv
 import uuid
 from core.graph import navi_app
 from langchain_core.messages import HumanMessage
+import re
 from core.database import init_db
 import sqlite3
-# --- 1. CONFIGURATION & ENVIRONMENT 
-
-load_dotenv()
-init_db()
-
-
 import base64
 from PIL import Image
 import io
+
+# --- 1. CONFIGURATION & ENVIRONMENT 
+load_dotenv()
+init_db()
 
 def display_navi_chart(b64_string):
     try:
@@ -24,7 +23,6 @@ def display_navi_chart(b64_string):
         st.image(img, caption="Navi's Generated Analysis", use_container_width=True)
     except Exception as e:
         st.error(f"Could not render chart: {e}")
-
 
 def inspect_skills():
     conn = sqlite3.connect("tools/navi_skills.db")
@@ -46,38 +44,38 @@ def render_sidebar():
         
         # --- RESET MECHANISM ---
         if st.button("🗑️ Reset Agent Memory", use_container_width=True):
-        # 1. Clear Streamlit Caching
-          st.cache_data.clear()
-          st.cache_resource.clear()
+            # 1. Clear Streamlit Caching
+            st.cache_data.clear()
+            st.cache_resource.clear()
     
-        # 2. Force a new Thread ID
-        new_id = str(uuid.uuid4())
-        st.session_state.thread_id = new_id
+            # 2. Force a new Thread ID
+            new_id = str(uuid.uuid4())
+            st.session_state.thread_id = new_id
     
-        # 3. Clear UI Messages
-        st.session_state.messages = []
+            # 3. Clear UI Messages
+            st.session_state.messages = []
 
-        # 4. CRITICAL: Manual State Reset
-        # If you want to be 100% sure, manually overwrite the state for the NEW thread
-        config = {"configurable": {"thread_id": new_id}}
-        navi_app.update_state(config, {
-        "final_answer": None, 
-        "last_error": None, 
-        "plan": [], 
-        "retry_count": 0,
-        "generated_tool_code": None
-    })
+            # 4. CRITICAL: Manual State Reset
+            config = {"configurable": {"thread_id": new_id}}
+            navi_app.update_state(config, {
+                "final_answer": None, 
+                "last_error": None, 
+                "plan": [], 
+                "retry_count": 0,
+                "generated_tool_code": None,
+                "image_payload": None # Ensure payload is cleared
+            })
 
-        print(f"--- 🧠 FULL BRAIN WIPE: Thread {new_id} ---")
-        st.rerun()
+            print(f"--- 🧠 FULL BRAIN WIPE: Thread {new_id} ---")
+            st.rerun()
             
         st.divider()
-        # Visual check: If this ID changes when you click, the button is working.
         current_tid = st.session_state.get('thread_id', 'None')
         st.caption(f"Current Thread: `{current_tid}`")
 
 
 st.set_page_config(page_title="Navi: Autonomous Agent", page_icon="🌐", layout="wide")
+
 
 # Ensure API Key is present
 if not os.getenv("GROQ_API_KEY"):
@@ -93,6 +91,23 @@ if "messages" not in st.session_state:
 
 # --- 2. UI LAYOUT ---
 st.title("Navi: Self-Learning Multi-Purpose Agent")
+st.markdown("""
+Navi is an advanced AI agent that thinks, researches, and executes code in real-time. Navi can identify when it lacks a tool, write its own Python scripts and auto install dependencies, 
+self debug errors, research fixes for persistent errors, and create complex data visualizations completely autonomously.
+""")
+
+with st.expander("🚀 See what Navi can do (Copy/Paste these)"):
+    # EXAMPLE 1: Logistics & Optimization (Your previous winner)
+    st.markdown("### 🗺️ Logistics Optimization")
+    st.code("Define 6 delivery locations in a city with their coordinates (X, Y) and a 'priority' score (1-10). Calculate the Euclidean distance between all points starting from a central Depot (0,0). Use a simple heuristic to determine the most efficient path to visit all locations, prioritizing higher-score locations first. Generate a scatter plot showing the locations and the 'path' taken by the agent, and output a table showing the sequence of visits, their priority, and the total distance traveled.", language="text")
+    
+    # EXAMPLE 2: Financial Engineering (Monte Carlo Simulation)
+    st.markdown("### 📈 Financial Modeling")
+    st.code("Perform a Monte Carlo simulation for a stock portfolio with a starting value of $10,000, 8% expected annual return, and 20% volatility. Run 1,000 iterations over 10 years. For the growth paths plot, only plot 50 random paths with a low alpha (0.3) to show the trend, and overlay the 5th, 50th, and 95th percentile lines in bold. Finally, show a histogram of the final portfolio values.", language="text")
+
+    # EXAMPLE 3: Project Management (PERT/CPM Logic)
+    st.markdown("### 🏗️ Operations Research")
+    st.code("Create a project schedule with 5 tasks, each with a duration and 1-2 dependencies. Calculate the Critical Path (the minimum time to complete the project). Output the sequence and a Gantt-style chart showing the timeline.", language="text")
 st.markdown("---")
 
 with st.sidebar:
@@ -115,7 +130,6 @@ if prompt := st.chat_input("Assign a task to Navi..."):
         st.markdown(prompt)
 
     # --- 3. EXECUTION LOOP ---
-    # We removed the Checkpointer config as it's no longer needed for interruptions
     config = {"configurable": {"thread_id": st.session_state.thread_id}}
     config["recursion_limit"] = 50 
     
@@ -124,51 +138,81 @@ if prompt := st.chat_input("Assign a task to Navi..."):
         "inventory": ["ddgs_search", "read_file", "write_file"],
         "retry_count": 0,
         "history": [HumanMessage(content=prompt)],
-        # Removed 'user_approved' flag
         "final_answer": None,
         "last_error": None,
         "generated_tool_code": None,
-        "packages": []
+        "packages": [],
+        "image_payload": None # Initialize image payload
     }
 
     with st.chat_message("assistant"):
         final_ans = None
+        current_image_payload = None
         
-        with st.status("Navi is processing...", expanded=False) as status:
-            # Full autonomous stream - no interrupts
+        with st.status("Navi is processing...", expanded=True) as status:
             for event in navi_app.stream(initial_input, config, stream_mode="updates"):
                 for node_name, node_output in event.items():
+                    # Progress updates
                     if "plan" in node_output and node_output["plan"]:
                         plan_text = node_output["plan"][-1]
                         st.write(f"📝 {plan_text}")
                     
-                    if "final_answer" in node_output and node_output["final_answer"]:
+                    # Capture final answer
+                    if "final_answer" in node_output:
                         final_ans = node_output["final_answer"]
-                
-                if final_ans:
-                    break
+
+                    # Capture the hidden image payload from the state
+                    if "image_payload" in node_output and node_output["image_payload"]:
+                        current_image_payload = node_output["image_payload"]
             
             status.update(label="Process Finished", state="complete", expanded=False)
 
-        import re
+        if final_ans:
+            # 1. Detect indexed placeholders
+            placeholders = re.findall(r"\[IMAGE_DATA_HIDDEN_(\d+)\]", final_ans)
+            
+            # --- SCENARIO A: INLINE MULTI-IMAGE INJECTION ---
+            if placeholders and isinstance(current_image_payload, list):
+                # This pattern eats "Figure:", "Plot:", brackets, and stray colons
+                split_pattern = r"(?:Figure:\s*|Plot:\s*)?\(?\[IMAGE_DATA_HIDDEN_\d+\]\)?[:\s]*"
+                
+                parts = re.split(split_pattern, final_ans)
+                
+                for i, part in enumerate(parts):
+                    # Display text segment
+                    if part.strip():
+                        st.markdown(part.strip())
+                    
+                    # Inject image at the split point
+                    if i < len(current_image_payload):
+                        display_navi_chart(current_image_payload[i])
+                
+                st.session_state.messages.append({"role": "assistant", "content": final_ans})
 
-    if final_ans:
-      b64_match = re.search(r"(iVBORw0KGgoAAAANSUhEUg[\w\+\/\s\n=]+)", final_ans)
+            # --- SCENARIO B: SINGLE PLACEHOLDER (Backwards Compatibility) ---
+            elif "[IMAGE_DATA_HIDDEN]" in final_ans and current_image_payload:
+                display_text = final_ans.replace("[IMAGE_DATA_HIDDEN]", "").replace("Figure:", "").strip()
+                st.markdown(display_text)
+        
+                # Handle if it's a list with one item or just a string
+                img_to_show = current_image_payload[0] if isinstance(current_image_payload, list) else current_image_payload
+                display_navi_chart(img_to_show)
+        
+                st.session_state.messages.append({"role": "assistant", "content": display_text})
 
-    if b64_match:
-        # 1. Extract the image string
-        chart_data = b64_match.group(1).strip()
+            # --- SCENARIO C: DIRECT BASE64 (Small Result Fallback) ---
+            elif re.search(r"(iVBORw0KGgoAAAANSUhEUg[\w\+\/\s\n=]+)", final_ans):
+                b64_match = re.search(r"(iVBORw0KGgoAAAANSUhEUg[\w\+\/\s\n=]+)", final_ans)
+                chart_data = b64_match.group(1).strip()
+                display_text = final_ans.replace(chart_data, "").replace("Figure:", "").strip()
         
-        # 2. Clean the text (remove the giant string so we can display the words)
-        # We replace the giant string with an empty space in the display text
-        display_text = final_ans.replace(chart_data, "").replace("Figure:", "").strip()
+                st.markdown(display_text)
+                display_navi_chart(chart_data)
         
-        st.markdown(display_text)
-        display_navi_chart(chart_data)
-        
-        # Save clean text to session
-        st.session_state.messages.append({"role": "assistant", "content": display_text})
-    else:
-        # Standard display if no image string is found
-        st.markdown(final_ans)
-        st.session_state.messages.append({"role": "assistant", "content": final_ans})
+                st.session_state.messages.append({"role": "assistant", "content": display_text})
+
+            # --- SCENARIO D: TEXT ONLY ---
+            else:
+                st.markdown(final_ans)
+                st.session_state.messages.append({"role": "assistant", "content": final_ans})
+                

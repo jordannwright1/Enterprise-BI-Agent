@@ -8,6 +8,7 @@ from langgraph.checkpoint.memory import MemorySaver
 import json
 import subprocess
 import sys
+import groq
 from importlib import metadata
 import docker
 import sqlite3
@@ -77,15 +78,26 @@ import subprocess
 import sys
 
 def ensure_packages(package_list):
-    """Installs missing packages via pip."""
+    """Installs missing packages safely and reports failures."""
+    failed_packages = []
+    
     for package in package_list:
         try:
             # Check if package is already available
             __import__(package.replace('-', '_'))
         except ImportError:
-            print(f"📦 System: Installing missing dependency: {package}...")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-
+            try:
+                print(f"📦 System: Installing missing dependency: {package}...")
+                # We use check_call, but wrap it to catch the "exit status 1"
+                subprocess.check_call([sys.executable, "-m", "pip", "install", package, "--quiet"])
+            except subprocess.CalledProcessError as e:
+                print(f"❌ System: Failed to install {package}")
+                failed_packages.append(package)
+            except Exception as e:
+                print(f"⚠️ System: Unexpected error installing {package}: {e}")
+                failed_packages.append(package)
+                
+    return failed_packages # Return the list of failures
 
 def extract_section(text, section_header):
     """
@@ -120,9 +132,32 @@ def planner_node(state: NaviState):
 
     # helper for scannability
     last_step = str(plan[-1]).upper() if plan else ""
+    
+    
+    if final_ans_raw and not last_error:
+        print("✨ Planner: Task complete. Generating final summary...")
+        
+        format_prompt = f"""
+        You are Navi, a professional AI assistant. 
+        User Task: {task}
+        Raw Data Found: {final_ans_raw}
+        
+        Provide a friendly, professional summary of the raw data. Make sure the answer reflects what the user was asking for in the task.
 
-    if final_ans_raw and not last_error and "occurred" not in str(final_ans_raw).lower():
-        return {"plan": state.get("plan", []) + ["### 📢 ACTION: SUMMARIZE"]}
+        If the user asks about images, you don't have to explain that you are a text based model and cannot generate images.  The images will be generated but you are not responsible for them. 
+        
+        List data clearly (tables, reports, or bullets).
+        
+        """
+        
+        summary_response = llm_fast.invoke(format_prompt).content.strip()
+        
+        # Return the summary as the final answer and signal the EXIT
+        return {
+            "final_answer": summary_response,
+            "last_error": None,
+            "plan": plan + ["### 🏁 ACTION: EXIT"]
+        }
 
     if last_error:
         if retry_count < 1:
@@ -196,6 +231,7 @@ def research_node(state: NaviState):
     task = state.get("task", "Unknown Task")
     raw_error = state.get('last_error')
     final_answer = state.get('final_answer')
+    fail_count = state.get("consecutive_failures", 0) + 1
     past_strategies = state.get("past_strategies", [])
     failed_code = state.get("generated_tool_code")
     # 1. Error Identification
@@ -206,8 +242,19 @@ def research_node(state: NaviState):
             last_error = "Unknown error: No output captured."
     else:
         last_error = str(raw_error)
+
+
+    if fail_count >= 3:
+        print("🛑 CRITICAL: Maximum research attempts reached. Terminating.")
+        return {
+            "final_answer": "I apologize, but I've encountered a persistent technical issue after several attempts to self-correct. I am stopping here to prevent an infinite loop.",
+            "last_error": None,      
+            "generated_tool_code": None, 
+            "consecutive_failures": 0,    # Reset count
+            "plan": state.get("plan", []) + ["### 🏁 ACTION: EXIT", "### 🛑 TERMINATED"]
+        }
     
-    print(f"\n🔍 RESEARCHER ACTIVATED: Analyzing failure...")
+    print(f"\n🔍 RESEARCHER ACTIVATED (Attempt {fail_count}/2)")
 
     # 2. Strategic Pivot Prompt
     reasoning_prompt = f"""
@@ -239,11 +286,12 @@ def research_node(state: NaviState):
         new_strategy = extract_section(response, "### NEW_STRATEGY_NAME")
         
         return {
-            "plan": state.get("plan", []) + [f"### RESEARCH NOTES\n{response}"],
-            "past_strategies": past_strategies + [new_strategy if new_strategy else "Alternative Attempt"],
-            "last_error": None, # Reset to allow the Planner to move to Code
-            "retry_count": state.get("retry_count", 0)
-        }
+        "plan": state.get("plan", []) + [f"### RESEARCH NOTES\n{response}"],
+        "consecutive_failures": fail_count, 
+        "last_error": None,
+        "past_strategies": state.get("past_strategies", []) + [new_strategy],
+        "retry_count": state.get("retry_count", 0)
+    }
     except Exception as e:
         return {"plan": state.get("plan", []) + [f"### RESEARCH FAILED: {str(e)}"]}
         
@@ -301,6 +349,10 @@ def skill_creator_node(state: NaviState):
         5. **No Scrapy in Production:**
         The Researcher may provide Scrapy CSS selectors. You MUST translate these to `requests` + `BeautifulSoup` (using `soup.select` or `soup.find`).
 
+        6. **Data Aggregation:** If your code generates large datasets (like 1,000 simulation rows), DO NOT return the raw list. 
+        Calculate the summary statistics (mean, median, min, max, etc.) INSIDE the 'execute_tool' function. 
+        Only return a concise string summary and the Base64 plot. NEVER print massive loops to the console.
+
         ### FINAL STRUCTURE:
         ```python
         import requests
@@ -320,49 +372,58 @@ def skill_creator_node(state: NaviState):
     new_strategy = extract_section(research_notes, "### NEW_STRATEGY_NAME")
     recommended_code = extract_section(research_notes, "### RECOMMENDED_CODE")
     prompt = f"""
-    ### ROLE: Senior Python Engineer
-    
-   ### STRATEGIC SHIFT DETECTED
-    The previous approach failed. The Researcher has proposed a new mental model:
-    **Strategy:** {new_strategy if new_strategy else "General Diversification"}
-    
-    ### PREVIOUS ATTEMPT (FAILED)
-    {f"CODE:\\n{previous_code}\\n\\nERROR:\\n{last_error}" if previous_code else "No previous attempt."}
-
-    ### RESEARCHER'S INSTRUCTIONS
-    {research_notes}
-
-    ### IMPLEMENTATION GUIDELINE
-    {recommended_code if recommended_code else "Write a fresh solution from scratch."}
+    ### ROLE: Senior Python Engineer (Specialist in Data Science & Automation)
     
     ### TASK
     {task}
-    
-    ### CRITICAL INSTRUCTIONS
-    1. Use the Researcher's logic to find elements.
-    2. Wrap the execution in try-except blocks.
-    3. Ensure 'execute_tool()' returns a clear summary string of the data found.
-    4. Avoid the previous error: {last_error}
-    5. TRANSLATE SELECTORS: If the Researcher provided Scrapy-style code (response.css or yield), translate it to BeautifulSoup (soup.select or soup.find) and ensure the function returns a string.
 
-    When plotting in Docker, always use plt.switch_backend('Agg') and save the figure to a io.BytesIO buffer before encoding to base64.
+    ### PREVIOUS ATTEMPT & ERROR
+    {f"CODE: {previous_code}\nERROR: {last_error}" if previous_code else "Fresh Attempt."}
 
-    When generating visuals, always encode them as base64 strings.  Use the style, plt.style.use('ggplot').
+    ### RESEARCHER'S GUIDANCE
+    {research_notes if research_notes else "Use standard best practices for this domain."}
 
+    ### MANDATORY EXECUTION RULES (CRITICAL):
+    1. **NO VERBOSE PRINTING:** If the task involves simulations (Monte Carlo), loops, or large datasets, NEVER print individual iteration results. 
+    2. **INTERNAL AGGREGATION:** Perform all math/loops inside `execute_tool`. Calculate the final Mean, Median, Std Dev, and Percentiles locally.
+    3. **OUTPUT LIMIT:** The string returned by `execute_tool()` MUST be a concise summary (max 500 words). If you provide a table, show only the first/last 5 rows if the data is large.
+    4. **VISUALIZATION:** If plotting, use `plt.switch_backend('Agg')`. Return the Base64 string at the VERY end of the result string.
+    5. **BS4/SCRAPING:** If scraping, use defensive `if element else "N/A"` checks to avoid NoneType errors. Use Absolute URLs.
+    6. **Multi-Plot Handling:** If the user asks for multiple charts, use `plt.figure()` before each plot to ensure they are captured as distinct images. Return all generated Base64 strings sequentially.
 
-    ### FINAL TOOL STRUCTURE
+    ### STYLE REQUIREMENTS:
+    - Use `plt.style.use('ggplot')` for all charts.
+    - If calculating stock/finance data, use `pandas` and `numpy`.
+    - Format large numbers with commas (e.g., 10,000) for readability.
+
+    ### FINAL STRUCTURE:
     ```python
-    import requests
-    from bs4 import BeautifulSoup
-    import re
+    import numpy as np
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    import io, base64
 
     def execute_tool():
-        # Implementation based on Research
+        # 1. Run simulation/logic
+        # 2. Aggregate data into a summary string
+        # 3. Create plot if needed
+        # 4. Return ONLY the summary and the image string
+        return summary_string
     ```
     """
-
-    response = llm_fast.invoke(prompt)
     code = extract_clean_code(response.content)
+    try:
+        response = llm_pro.invoke(prompt)
+    except groq.RateLimitError:
+            print("⚠️ 70B Rate Limit! Falling back to 8B...")
+            response = llm_fast.invoke(prompt)
+    except Exception as e:
+    # Generic fallback for other types of "out of tokens" or context errors
+        if "rate_limit" in str(e).lower() or "context_length" in str(e).lower():
+            print("⚠️ Token/Context limit hit. Falling back to 8B...")
+            response = llm_fast.invoke(prompt)
+        else:
+            raise e
 
     if not code:
         return {"last_error": "### ❌ Error\nNo Python code found."}
@@ -371,13 +432,22 @@ def skill_creator_node(state: NaviState):
         ast.parse(code)
         
         # --- DYNAMIC DEPENDENCY & SAVING ---
-        
         final_packages = extract_dependencies(code)
 
         if final_packages:
-            ensure_packages(final_packages)
+            # Capture the list of packages that failed to install
+            failed_installs = ensure_packages(final_packages)
+            
+            # If any package failed, we halt and report to the Planner
+            if failed_installs:
+                error_msg = f"### ❌ Dependency Error\nCould not install: {', '.join(failed_installs)}. Please research an alternative library or approach."
+                print(f"⚠️ {error_msg}")
+                return {
+                    "last_error": error_msg,
+                    "plan": state.get('plan', []) + [f"### ⚠️ Install Failed: {failed_installs}"]
+                }
 
-        # COMMIT TO DATABASE
+        # COMMIT TO DATABASE (Only if dependencies passed)
         task_id = get_skill_name(task)
         save_skill(task_id, task, code, final_packages)
         print(f"💾 Skill Saved Successfully: {task_id}")
@@ -391,18 +461,22 @@ def skill_creator_node(state: NaviState):
     
     except SyntaxError as e:
         return {"last_error": f"### ❌ Syntax Error\n{str(e)}"}
+    except Exception as e:
+        # Catch-all safety net for the creator node
+        return {"last_error": f"### ❌ Skill Creator Error\n{str(e)}"}
         
 
-        
-client = docker.from_env()
 
 # --- Node 3: Executor ---
+import subprocess
+import tempfile
 import textwrap
-import base64
+import sys
+import os
 import re
 
 def executor_node(state: NaviState):
-    print("\n🚀 [DOCKER] Starting Container Execution...")
+    print("\n🚀 [SUBPROCESS] Starting Lite Execution...")
     
     code = state.get('generated_tool_code')
     packages = state.get('packages', []) 
@@ -441,27 +515,34 @@ if __name__ == "__main__":
 """    
     full_script = textwrap.dedent(raw_script).strip()
 
-    # 2. ENCODE & PREPARE
-    encoded_payload = base64.b64encode(full_script.encode('utf-8')).decode('utf-8')
-    pkg_str = " ".join(packages)
-    install_cmd = f"pip install --no-cache-dir {pkg_str} --quiet --root-user-action=ignore &&"
-    docker_command = f"{install_cmd} echo {encoded_payload} | base64 -d | python3"
+    # 2. DYNAMIC PACKAGE INSTALLATION (Streamlit Cloud Compatible)
+    if packages:
+        print(f"📦 Checking/Installing dependencies: {', '.join(packages)}")
+        for pkg in packages:
+            try:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "--quiet"])
+            except Exception as e:
+                print(f"⚠️ Warning: Could not install {pkg}: {e}")
 
-    print(f"\n{'='*20} DOCKER START {'='*20}")
-    container = None
+    # 3. EXECUTION VIA SUBPROCESS
+    # We use a temporary file to hold the script for the sub-process to run
+    with tempfile.NamedTemporaryFile(suffix=".py", delete=False, mode='w', encoding='utf-8') as f:
+        f.write(full_script)
+        temp_path = f.name
+
+    print(f"\n{'='*20} EXECUTION START {'='*20}")
     try:
-        container = client.containers.run(
-            "python:3.11-slim",
-            command=["sh", "-c", docker_command],
-            detach=True,
-            network_mode="bridge",
-            dns=["8.8.8.8", "1.1.1.1"],
-            mem_limit="512m",
-            environment={"PYTHONIOENCODING": "utf-8"}
+        # Run the script using the same Python interpreter as the main app
+        process = subprocess.run(
+            [sys.executable, temp_path],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"}
         )
-
-        container.wait(timeout=60)
-        raw_logs = container.logs().decode("utf-8", errors="replace")
+        
+        # Combine stdout and stderr to capture all logs and errors
+        raw_logs = process.stdout + "\n" + process.stderr
         
         # --- THE LOG SCRUBBER ---
         output_cleaned = re.sub(r"http[s]?://\S+usercontent\.\S+", "", raw_logs)
@@ -469,55 +550,85 @@ if __name__ == "__main__":
         output_cleaned = output_cleaned.strip()
 
         print(output_cleaned)
-      
-        print(f"{'='*21} DOCKER END {'='*21}\n")
+        print(f"{'='*21} EXECUTION END {'='*21}\n")
 
-        # 3. PARSE MARKERS
+        # 4. PARSE MARKERS
         match = re.search(r"---NAVI_RESULT_START---\s*(.*?)\s*---NAVI_RESULT_END---", output_cleaned, re.DOTALL)
         
         if match:
             extracted_data = match.group(1).strip()
             
+            # 1. MULTI-STRIPE HARVESTER
+            # Captured images are stored in a list to support multiple visuals per task
+            image_payloads = []
+            # This pattern captures Base64 even with internal newlines/whitespace
+            b64_pattern = r"(iVBORw0KGgoAAAANSUhEUg[A-Za-z0-9\+/\s\n=]+)"
+            
+            # Find all occurrences of Base64 images
+            all_figs = re.findall(b64_pattern, extracted_data)
+            
+            clean_for_llm = extracted_data
+            for idx, fig_raw in enumerate(all_figs):
+                # Clean the specific match for the UI (remove whitespace/newlines)
+                image_data_clean = re.sub(r"\s+", "", fig_raw)
+                image_payloads.append(image_data_clean)
+                
+                # Identify and replace the 'container' (HTML tags, labels like Figure:)
+                # We use re.escape to ensure the raw Base64 doesn't break the regex engine
+                container_pattern = r"(<img[^>]*?|Figure:\s*|Plot:\s*)?" + re.escape(fig_raw) + r"([^>]*?>)?"
+                clean_for_llm = re.sub(container_pattern, f"\n\n[IMAGE_DATA_HIDDEN_{idx}]\n\n", clean_for_llm)
+
+            # 2. FINAL TEXT SAFETY NET (Truncate the "Wall of Numbers")
+            # If the Monte Carlo simulation printed 1,000 lines of text, we snip them here.
+            if len(clean_for_llm) > 5000:
+                header = clean_for_llm[:2500]
+                footer = clean_for_llm[-2500:]
+                clean_for_llm = f"{header}\n\n... [HEAVY DATA TRUNCATED FOR CONTEXT LIMITS] ...\n\n{footer}"
+
             # --- VALIDATION: SHORT/EMPTY DATA ---
-            if len(extracted_data) < 30 and "error" not in extracted_data.lower():
+            if len(clean_for_llm) < 30 and "error" not in clean_for_llm.lower():
                 return {
                     "last_error": "### ⚠️ Logic Failure\nExtracted data was too short or empty.",
                     "final_answer": None,
-                    "retry_count": retry_count, # Keep count to trigger Research
+                    "retry_count": retry_count,
                     "plan": current_plan + ["### ⚠️ Truncated Result"]
                 }
 
-            # --- VALIDATION: SOFT ERRORS (Logic/Scraping Failure) ---
+            # --- VALIDATION: SOFT ERRORS ---
             soft_error_keywords = [
-            "failed to", "error:", "none type", "empty", 
-            "none", "not found", "division by zero", "an error occurred:", "syntax error", "invalid syntax", "exception"
-          ]
-            if any(k in extracted_data.lower() for k in soft_error_keywords):
+                "failed to", "error:", "none type", "empty", 
+                "not found", "division by zero", "an error occurred:", 
+                "syntax error", "invalid syntax", "exception", "error sending email:"
+            ]
+            if any(k in clean_for_llm.lower() for k in soft_error_keywords):
                 print("⚠️ Logic Failure detected in extracted data. Re-routing to Planner.")
                 return {
-                    "last_error": f"### ⚠️ Logic Failure\n{extracted_data}",
+                    "last_error": f"### ⚠️ Logic Failure\n{clean_for_llm}",
                     "final_answer": None,
                     "retry_count": retry_count,
                     "plan": current_plan + ["### ⚠️ Execution Logic Failed"]
                 }
             
             # --- CLEAR SUCCESS ---
-            print(f"✅ EXECUTOR SUCCESS: Data extracted ({len(extracted_data)} chars)")
+            has_images = len(image_payloads) > 0
+            print(f"✅ EXECUTOR SUCCESS: Data extracted ({len(clean_for_llm)} text chars, Images Captured: {len(image_payloads)})")
             return {
-                "final_answer": str(extracted_data),
+                "final_answer": clean_for_llm,
+                "image_payload": image_payloads,
                 "last_error": None,
                 "retry_count": retry_count,
+                "consecutive_failures": 0,
                 "generated_tool_code": state.get("generated_tool_code"),
                 "plan": state.get("plan", []) + ["### ✅ Execution Success"]
             }
 
-        # 4. FAILURE PATH (No Markers = Crash)
+        # 5. FAILURE PATH (No Markers = Crash)
         log_lines = output_cleaned.splitlines()
         final_crash_log = "\n".join(log_lines[-15:]).strip() 
 
         print(f"❌ EXECUTOR CRASH: Returning logs to Planner.")
         return {
-            "last_error": f"### ❌ Container Crash\n```text\n{final_crash_log}\n```",
+            "last_error": f"### ❌ Execution Crash\n```text\n{final_crash_log}\n```",
             "final_answer": None,
             "generated_tool_code": state.get("generated_tool_code"),
             "retry_count": retry_count,
@@ -535,12 +646,9 @@ if __name__ == "__main__":
         }
     
     finally:
-        if 'container' in locals() and container:
-            try:
-                container.remove(force=True)
-            except:
-                pass
-            
+        # Cleanup the temporary file
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
 
 # --- Node 4: Human-in-the-Loop ---
@@ -584,7 +692,9 @@ def route_after_plan(state: NaviState):
     last_step = str(plan[-1]).upper()
     print(f"DEBUG [Router] - Deciding path for: {last_step}")
 
-    if "SUMMARIZE" in last_step: return "summarizer"
+    if "EXIT" in last_step or "TERMINATED" in last_step:
+        return END
+    
     if "RESEARCH" in last_step:
       print("🎯 Router: Match! Redirecting to Research Node.") 
       return "research"
@@ -601,52 +711,43 @@ def route_after_execution(state: NaviState):
         print(f"🎯 Router: Redirecting to Planner for error handling.")
         return "planner"
     
-    if state.get("final_answer"):
-        print("✅ Router: Success detected. Sending to summarizer.")
-        return "summarizer"
         
     return "planner"
 
 
-# --- Graph Construction ---
+# --- Node Configuration ---
 workflow = StateGraph(NaviState)
 
-# Nodes
 workflow.add_node("planner", planner_node)
 workflow.add_node("skill_creation", skill_creator_node)
 workflow.add_node("executor", executor_node)
 workflow.add_node("research", research_node)
-workflow.add_node("summarizer", summarizer_node)
 
-# Entry
 workflow.set_entry_point("planner")
 
-# Conditional Routing from Planner
+# --- Planner Routing ---
 workflow.add_conditional_edges(
     "planner", 
     route_after_plan, 
     {
         "skill_creation": "skill_creation", 
         "research": "research", 
-        "summarizer": "summarizer"
-        
+        END: END 
     }
 )
+
+# --- Technical Edges ---
 workflow.add_edge("research", "skill_creation")
-# Technical Loop
 workflow.add_edge("skill_creation", "executor")
+
+# --- Executor Routing ---
 workflow.add_conditional_edges(
     "executor", 
     route_after_execution, 
     {
-        "planner": "planner",
-        "summarizer": "summarizer"
-        
+        "planner": "planner" # Success or Failure, go to Planner to decide next move
     }
 )
-
-# Terminal Edge
-workflow.add_edge("summarizer", END)
 
 # Compile
 navi_app = workflow.compile(checkpointer=MemorySaver())
