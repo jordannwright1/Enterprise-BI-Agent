@@ -107,7 +107,7 @@ with st.expander("🚀 See what Navi can do (Copy/Paste these)"):
 
     # EXAMPLE 3: Project Management (PERT/CPM Logic)
     st.markdown("### 🏗️ Operations Research")
-    st.code("Create a project schedule with 5 tasks, each with a duration and 1-2 dependencies. Calculate the Critical Path (the minimum time to complete the project). Output the sequence and a Gantt-style chart showing the timeline.", language="text")
+    st.code("Perform a Critical Path Method (CPM) analysis for a project with 5 tasks, each having defined durations and 1-2 dependencies. Calculate the minimum completion time and identify the critical path sequence. Generate a high-fidelity visual using Matplotlib to visualize the project timeline and highlight the critical path in a distinct color.", language="text")
 st.markdown("---")
 
 with st.sidebar:
