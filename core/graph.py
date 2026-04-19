@@ -409,17 +409,19 @@ def skill_creator_node(state: NaviState):
         return summary_string
     ```
     """
-    code = extract_clean_code(response.content)
     try:
         response = llm_pro.invoke(prompt)
+        code = extract_clean_code(response.content)
     except groq.RateLimitError:
             print("⚠️ 70B Rate Limit! Falling back to 8B...")
             response = llm_fast.invoke(prompt)
+            code = extract_clean_code(response.content)
     except Exception as e:
     # Generic fallback for other types of "out of tokens" or context errors
         if "rate_limit" in str(e).lower() or "context_length" in str(e).lower():
             print("⚠️ Token/Context limit hit. Falling back to 8B...")
             response = llm_fast.invoke(prompt)
+            code = extract_clean_code(response.content)
         else:
             raise e
 
