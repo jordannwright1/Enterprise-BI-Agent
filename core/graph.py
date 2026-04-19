@@ -142,6 +142,8 @@ def planner_node(state: NaviState):
         
         Provide a friendly, professional summary of the raw data. Make sure the answer reflects what the user was asking for in the task.
 
+        Never provide code blocks in your response.
+
         
         List data clearly (tables, reports, or bullets).
         
@@ -638,8 +640,8 @@ if __name__ == "__main__":
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
-            
-                        
+
+
 
 # --- Node 4: Human-in-the-Loop ---
 def human_gate_node(state: NaviState):
