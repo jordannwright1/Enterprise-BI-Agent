@@ -514,7 +514,7 @@ if __name__ == "__main__":
 """    
     full_script = textwrap.dedent(raw_script).strip()
 
-    # 2. DYNAMIC PACKAGE INSTALLATION (Streamlit Cloud Compatible)
+    # 2. DYNAMIC PACKAGE INSTALLATION
     if packages:
         print(f"📦 Checking/Installing dependencies: {', '.join(packages)}")
         for pkg in packages:
@@ -524,14 +524,12 @@ if __name__ == "__main__":
                 print(f"⚠️ Warning: Could not install {pkg}: {e}")
 
     # 3. EXECUTION VIA SUBPROCESS
-    # We use a temporary file to hold the script for the sub-process to run
     with tempfile.NamedTemporaryFile(suffix=".py", delete=False, mode='w', encoding='utf-8') as f:
         f.write(full_script)
         temp_path = f.name
 
     print(f"\n{'='*20} EXECUTION START {'='*20}")
     try:
-        # Run the script using the same Python interpreter as the main app
         process = subprocess.run(
             [sys.executable, temp_path],
             capture_output=True,
@@ -540,10 +538,7 @@ if __name__ == "__main__":
             env={**os.environ, "PYTHONIOENCODING": "utf-8"}
         )
         
-        # Combine stdout and stderr to capture all logs and errors
         raw_logs = process.stdout + "\n" + process.stderr
-        
-        # --- THE LOG SCRUBBER ---
         output_cleaned = re.sub(r"http[s]?://\S+usercontent\.\S+", "", raw_logs)
         output_cleaned = re.sub(r"\[notice\].*?|WARNING: Running pip.*?|immersive_entry_chip", "", output_cleaned)
         output_cleaned = output_cleaned.strip()
@@ -557,50 +552,51 @@ if __name__ == "__main__":
         if match:
             extracted_data = match.group(1).strip()
             
-            # 1. MULTI-STRIPE HARVESTER
-            # Captured images are stored in a list to support multiple visuals per task
+            # --- ULTIMATE MULTI-STRIPE HARVESTER (FIXES INCORRECT PADDING) ---
             image_payloads = []
-            # This pattern captures Base64 even with internal newlines/whitespace
-            b64_pattern = r"(iVBORw0KGgoAAAANSUhEUg[A-Za-z0-9\+/\s\n=]+)"
-            
-            # Find all occurrences of Base64 images
+            # Greedy capture for B64 chars, including internal whitespace and newlines
+            b64_pattern = r"(iVBORw0KGgoAAAANSUhEUg[A-Za-z0-9\+/=\s\n]+)"
             all_figs = re.findall(b64_pattern, extracted_data)
             
             clean_for_llm = extracted_data
             for idx, fig_raw in enumerate(all_figs):
-                # Clean the specific match for the UI (remove whitespace/newlines)
-                image_data_clean = re.sub(r"\s+", "", fig_raw)
+                # 1. Nuclear Clean: Remove every character NOT allowed in Base64
+                image_data_clean = re.sub(r"[^A-Za-z0-9\+/=]", "", fig_raw)
+                
+                # 2. Strip existing padding to re-calculate from scratch
+                image_data_clean = image_data_clean.rstrip('=')
+                
+                # 3. Explicit Re-Padding (Standardize for Linux/Cloud)
+                remainder = len(image_data_clean) % 4
+                if remainder == 2:
+                    image_data_clean += "=="
+                elif remainder == 3:
+                    image_data_clean += "="
+                
                 image_payloads.append(image_data_clean)
                 
-                # Identify and replace the 'container' (HTML tags, labels like Figure:)
-                # We use re.escape to ensure the raw Base64 doesn't break the regex engine
+                # 4. Replace image data with HIDDEN tag for the Planner/LLM
                 container_pattern = r"(<img[^>]*?|Figure:\s*|Plot:\s*)?" + re.escape(fig_raw) + r"([^>]*?>)?"
                 clean_for_llm = re.sub(container_pattern, f"\n\n[IMAGE_DATA_HIDDEN_{idx}]\n\n", clean_for_llm)
 
-            # 2. FINAL TEXT SAFETY NET (Truncate the "Wall of Numbers")
-            # If the Monte Carlo simulation printed 1,000 lines of text, we snip them here.
+            # 2. FINAL TEXT SAFETY NET
             if len(clean_for_llm) > 5000:
                 header = clean_for_llm[:2500]
                 footer = clean_for_llm[-2500:]
-                clean_for_llm = f"{header}\n\n... [HEAVY DATA TRUNCATED FOR CONTEXT LIMITS] ...\n\n{footer}"
+                clean_for_llm = f"{header}\n\n... [HEAVY DATA TRUNCATED] ...\n\n{footer}"
 
             # --- VALIDATION: SHORT/EMPTY DATA ---
             if len(clean_for_llm) < 30 and "error" not in clean_for_llm.lower():
                 return {
-                    "last_error": "### ⚠️ Logic Failure\nExtracted data was too short or empty.",
+                    "last_error": "### ⚠️ Logic Failure\nExtracted data was too short.",
                     "final_answer": None,
                     "retry_count": retry_count,
                     "plan": current_plan + ["### ⚠️ Truncated Result"]
                 }
 
             # --- VALIDATION: SOFT ERRORS ---
-            soft_error_keywords = [
-                "failed to", "error:", "none type", "empty", 
-                "not found", "division by zero", "an error occurred:", 
-                "syntax error", "invalid syntax", "exception", "error sending email:"
-            ]
+            soft_error_keywords = ["failed to", "error:", "none type", "empty", "syntax error", "exception"]
             if any(k in clean_for_llm.lower() for k in soft_error_keywords):
-                print("⚠️ Logic Failure detected in extracted data. Re-routing to Planner.")
                 return {
                     "last_error": f"### ⚠️ Logic Failure\n{clean_for_llm}",
                     "final_answer": None,
@@ -609,8 +605,7 @@ if __name__ == "__main__":
                 }
             
             # --- CLEAR SUCCESS ---
-            has_images = len(image_payloads) > 0
-            print(f"✅ EXECUTOR SUCCESS: Data extracted ({len(clean_for_llm)} text chars, Images Captured: {len(image_payloads)})")
+            print(f"✅ EXECUTOR SUCCESS: Captured {len(image_payloads)} images.")
             return {
                 "final_answer": clean_for_llm,
                 "image_payload": image_payloads,
@@ -621,34 +616,30 @@ if __name__ == "__main__":
                 "plan": state.get("plan", []) + ["### ✅ Execution Success"]
             }
 
-        # 5. FAILURE PATH (No Markers = Crash)
+        # 5. FAILURE PATH
         log_lines = output_cleaned.splitlines()
         final_crash_log = "\n".join(log_lines[-15:]).strip() 
 
-        print(f"❌ EXECUTOR CRASH: Returning logs to Planner.")
         return {
             "last_error": f"### ❌ Execution Crash\n```text\n{final_crash_log}\n```",
             "final_answer": None,
-            "generated_tool_code": state.get("generated_tool_code"),
             "retry_count": retry_count,
             "plan": current_plan + [f"### ❌ Attempt {retry_count + 1} Crashed"]
         }
 
     except Exception as e:
-        print(f"🏗️ INFRASTRUCTURE ERROR: {str(e)}")
         return {
             "last_error": f"### 🏗️ Infrastructure Error\n{str(e)}", 
             "final_answer": None,
             "retry_count": retry_count,
-            "plan": current_plan + ["### 🏗️ Infra Error"],
-            "generated_tool_code": state.get("generated_tool_code")
+            "plan": current_plan + ["### 🏗️ Infra Error"]
         }
     
     finally:
-        # Cleanup the temporary file
         if os.path.exists(temp_path):
             os.remove(temp_path)
-
+            
+                        
 
 # --- Node 4: Human-in-the-Loop ---
 def human_gate_node(state: NaviState):
