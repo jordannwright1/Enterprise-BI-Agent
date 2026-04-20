@@ -96,18 +96,6 @@ Navi is an advanced AI agent that thinks, researches, and executes code in real-
 self debug errors, research fixes for persistent errors, and create complex data visualizations completely autonomously.
 """)
 
-with st.expander("🚀 See what Navi can do (Copy/Paste these)"):
-    # EXAMPLE 1: Logistics & Optimization (Your previous winner)
-    st.markdown("### 🗺️ Logistics Optimization")
-    st.code("Define 6 delivery locations in a city with their coordinates (X, Y) and a 'priority' score (1-10). Calculate the Euclidean distance between all points starting from a central Depot (0,0). Use a simple heuristic to determine the most efficient path to visit all locations, prioritizing higher-score locations first. Generate a scatter plot showing the locations and the 'path' taken by the agent, and output a table showing the sequence of visits, their priority, and the total distance traveled.", language="text")
-    
-    # EXAMPLE 2: Financial Engineering (Monte Carlo Simulation)
-    st.markdown("### 📈 Financial Modeling")
-    st.code("Perform a Monte Carlo simulation for a stock portfolio with a starting value of $10,000, 8% expected annual return, and 20% volatility. Run 1,000 iterations over 10 years. For the growth paths plot, only plot 50 random paths with a low alpha (0.3) to show the trend, and overlay the 5th, 50th, and 95th percentile lines in bold. Finally, show a histogram of the final portfolio values.", language="text")
-
-    # EXAMPLE 3: Project Management (PERT/CPM Logic)
-    st.markdown("### 🏗️ Operations Research")
-    st.code("Perform a Critical Path Method (CPM) analysis for a project with 5 tasks, each having defined durations and 1-2 dependencies. Calculate the minimum completion time and identify the critical path sequence. Generate a high-fidelity visual using Matplotlib to visualize the project timeline and highlight the critical path in a distinct color.", language="text")
 st.markdown("---")
 
 with st.sidebar:
