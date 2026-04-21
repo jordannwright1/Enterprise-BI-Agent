@@ -24,7 +24,7 @@ def install_package(package):
 
 def get_skill_name(task_description: str) -> str:
     """Uses the fast LLM to generate a creative, snake_case codename."""
-    prompt = f"Generate a 2-3 word creative snake_case codename for this task: {task_description}. Output ONLY the name."
+    prompt = f"Generate a 2-3 word creative snake_case codename for this task: {task_description}. Output ONLY the name.  The name MUST be 3 words maximum."
     response = llm_fast.invoke(prompt)
     # Clean up the output to ensure it's a valid filename/key
     name = re.sub(r'[^a-z0-9_]', '', response.content.lower().replace(" ", "_"))
@@ -140,7 +140,9 @@ def planner_node(state: NaviState):
         User Task: {task}
         Raw Data Found: {final_ans_raw}
         
-        Provide a friendly, professional summary of the raw data. Make sure the answer reflects what the user was asking for in the task.
+        Provide a friendly, professional summary of the raw data. Make sure the answer reflects what the user was asking for in the task. Never tell the user you can't produce images if they ask you to provide an image, simply return the data and continue your response.
+
+        Never provide individual data points used to generate graphs.
 
         Never provide code blocks in your response.
 
@@ -233,6 +235,7 @@ def research_node(state: NaviState):
     fail_count = state.get("consecutive_failures", 0) + 1
     past_strategies = state.get("past_strategies", [])
     failed_code = state.get("generated_tool_code")
+    res_fails = state.get("consecutive_research_failures", 0) + 1
     # 1. Error Identification
     if raw_error is None:
         if final_answer:
@@ -243,14 +246,11 @@ def research_node(state: NaviState):
         last_error = str(raw_error)
 
 
-    if fail_count >= 3:
-        print("🛑 CRITICAL: Maximum research attempts reached. Terminating.")
+    if res_fails >= 2:
+        print("🛑 CRITICAL: Maximum research attempts reached.")
         return {
-            "final_answer": "I apologize, but I've encountered a persistent technical issue after several attempts to self-correct. I am stopping here to prevent an infinite loop.",
-            "last_error": None,      
-            "generated_tool_code": None, 
-            "consecutive_failures": 0,    # Reset count
-            "plan": state.get("plan", []) + ["### 🏁 ACTION: EXIT", "### 🛑 TERMINATED"]
+            "consecutive_research_failures": res_fails,
+            "plan": state.get("plan", []) + ["### 🏁 ACTION: EXIT"]
         }
     
     print(f"\n🔍 RESEARCHER ACTIVATED (Attempt {fail_count}/2)")
@@ -286,8 +286,8 @@ def research_node(state: NaviState):
         
         return {
         "plan": state.get("plan", []) + [f"### RESEARCH NOTES\n{response}"],
-        "consecutive_failures": fail_count, 
         "last_error": None,
+        "consecutive_research_failures": res_fails,
         "past_strategies": state.get("past_strategies", []) + [new_strategy],
         "retry_count": state.get("retry_count", 0)
     }
@@ -352,6 +352,7 @@ def skill_creator_node(state: NaviState):
         Calculate the summary statistics (mean, median, min, max, etc.) INSIDE the 'execute_tool' function. 
         Only return a concise string summary and the Base64 plot. NEVER print massive loops to the console.
 
+        
         ### FINAL STRUCTURE:
         ```python
         import requests
@@ -382,6 +383,11 @@ def skill_creator_node(state: NaviState):
     ### RESEARCHER'S GUIDANCE
     {research_notes if research_notes else "Use standard best practices for this domain."}
 
+    ### RECOMMENDED STRATEGY:
+    {new_strategy}
+    ### RECOMMENDED CODE:
+    {recommended_code}
+
     ### MANDATORY EXECUTION RULES (CRITICAL):
     1. **NO VERBOSE PRINTING:** If the task involves simulations (Monte Carlo), loops, or large datasets, NEVER print individual iteration results. 
     2. **INTERNAL AGGREGATION:** Perform all math/loops inside `execute_tool`. Calculate the final Mean, Median, Std Dev, and Percentiles locally.
@@ -390,24 +396,70 @@ def skill_creator_node(state: NaviState):
     5. **BS4/SCRAPING:** If scraping, use defensive `if element else "N/A"` checks to avoid NoneType errors. Use Absolute URLs.
     6. **Multi-Plot Handling:** If the user asks for multiple charts, use `plt.figure()` before each plot to ensure they are captured as distinct images. Return all generated Base64 strings sequentially.
 
+    MANDATORY MULTI-STAGE SCRAPING:
+        If the user asks for "individual postings" or "details":
+
+        Phase 1 (Discovery): Scrape the search results page to gather the list of href links for each item.
+
+        Phase 2 (Deep Dive): For each discovered link, the script MUST perform a NEW requests.get() or session.get() to that specific URL.
+
+        Phase 3 (Extraction): Extract the data (description, requirements, salary) from the individual page, not the summary card.
+
+        Safety: Limit deep dives to the first 5 links to prevent timeouts.
+
+        No Placeholders: "Never guess element IDs like search-bar or btn. If you don't know the selector from the Research notes, the code must scrape the body text first to find them."
+
+        Verification Step: "Every execute_tool function must include a check: if not results: raise ValueError('Zero results found on page. Selectors may be incorrect.')."
+
+        Evidence Collection: "The output string MUST include a snippet of the unique 'Job ID' or 'Posted Date' from the site to prove the data was actually fetched."
+
+        ### TECHNICAL SPECIFICATION:
+        1. USE REQUESTS + BEAUTIFULSOUP ONLY (Unless Selenium is explicitly researched).
+        2. DYNAMIC SELECTORS: Use `soup.find_all(string=re.compile("..."))` instead of fixed IDs.
+        3. FAIL-FAST: If the HTTP status is not 200, return the status code and the first 500 characters of the page source for the Researcher to analyze.
+        4. NO DUMMY DATA: If no jobs are found, return 'ERROR: PAGE_STRUCTURE_MISMATCH'. Do not invent company names.
+
+        When scraping modern sites like BuiltIn or LinkedIn, look for the 'Network' tab data (JSON endpoints) in your research phase. It is often easier to fetch https://builtin.com/api/jobs... than to scrape the HTML
+    
+    You are creating a reusable Navi Skill. 
+    - If the task is WEB: Use requests/BeautifulSoup and focus on JSON APIs where possible.
+    - If the task is FILE: Use absolute paths and check if the file exists before reading.
+    - If the task is LOGIC: Ensure all edge cases are handled.
+
+    Every skill MUST return a string. If the task involves multiple steps, 
+    the string should summarize the outcome of each step. 
+    NEVER use 'print' for final results; only 'return'.
+
     ### STYLE REQUIREMENTS:
     - Use `plt.style.use('ggplot')` for all charts.
     - If calculating stock/finance data, use `pandas` and `numpy`.
     - Format large numbers with commas (e.g., 10,000) for readability.
 
     ### FINAL STRUCTURE:
-    ```python
-    import numpy as np
-    import pandas as pd
-    import matplotlib.pyplot as plt
-    import io, base64
+```python
+import sys
+import json
 
-    def execute_tool():
-        # 1. Run simulation/logic
-        # 2. Aggregate data into a summary string
-        # 3. Create plot if needed
-        # 4. Return ONLY the summary and the image string
-        return summary_string
+def execute_tool():
+    try:
+        # --- PHASE 1: INITIALIZATION ---
+        # (e.g., sessions, file handles, or variable setup)
+        
+        # --- PHASE 2: EXECUTION ---
+        # The main logic goes here.
+        
+        # --- PHASE 3: VALIDATION ---
+        # If the result is empty or logically impossible, RAISE an error.
+        # Example: if not data: raise ValueError("No data retrieved from source")
+        
+        # --- PHASE 4: FINAL PAYLOAD ---
+        # Build a robust summary of findings.
+        summary = "Success: [Detailed findings here]"
+        return summary
+
+    except Exception as e:
+        # Return the error directly so the Researcher can see it
+        return f"CRITICAL_ERROR: (the error, str(e))"
     ```
     """
     try:
@@ -649,32 +701,88 @@ def human_gate_node(state: NaviState):
     # This node is a placeholder. LangGraph 'interrupt' handles the actual pause.
     return {"history": [AIMessage(content="Waiting for human authorization...")]}
 
-def summarizer_node(state: NaviState):
-    print("✨ Summarizer Node: Transforming raw data into conversation...")
-    raw_data = state.get("final_answer")
-    task = state.get("task")
+def meditation_node(state: NaviState):
+    print("\n🧘 [MEDITATION] Contemplating System Failure...")
     
-    format_prompt = f"""
-    You are a helpful assistant named Navi. The user asked: {task}. 
-    I have the raw result here: {raw_data}.
+    # Gather context for Root Cause Analysis
+    error_log = state.get("last_error", "No error log found.")
+    research_notes = state.get("research_notes", "No research conducted.")
+    failed_code = state.get("generated_tool_code", "No code generated.")
+    task = state.get("current_task", "Unknown Task")
+
+    prompt = f"""
+    You are the Metacognitive Layer of Navi. Analyze the persistent failure in our execution loop.
     
-    Transform this into a friendly, professional, and clear conversational response. 
-    Summarize any lists or data found. Do not mention 'raw data' or 'markers'.  
-    When listing items, use a bullet or numbered list, or a table if applicable.
-    Do NOT list results in one sentence, list each result on a new line.
-
-    BAD example: Linear Regression Model: y = 7.89x + 6.26 R-squared: 1.00 Predicted Revenue for 50,000 Marketing Spend: 400.65
-
-    GOOD example: 
-    Linear Regression Model: y = 7.89x + 6.26 
-    R-squared: 1.00
-    Predicted Revenue for 50,000 Marketing Spend: 400.65
+    TASK: {task}
+    FAILED CODE: {failed_code}
+    EXECUTION ERROR: {error_log}
+    RESEARCH CONDUCTED: {research_notes}
+    
+    GOAL:
+    1. Identify the root cause (e.g., Environment block, logic flaw, or missing credentials).
+    2. Decide if a new strategy can solve this or if it's a 'Hard Stop' requiring human intervention.
+    
+    If fixable: Suggest a SPECIFIC revised strategy for the Planner.
+    If not: Explain clearly to the user why we cannot proceed and what they must provide.
     """
-    natural_response = llm_fast.invoke(format_prompt).content.strip()
+    try:
+
+        reflection = llm_pro.invoke(prompt)
+    except groq.RateLimitError:
+            print("⚠️ 70B Rate Limit! Falling back to 8B...")
+            reflection = llm_fast.invoke(prompt)
+    
+    # Check for terminal status
+    is_hard_stop = any(k in reflection.content.lower() for k in ["hard stop", "human intervention", "credentials needed"])
+    
     return {
-            "final_answer": natural_response,
-            "plan": ["### ✅ COMPLETE"]
-        }
+        "plan": state.get("plan", []) + ["### 🧘 Metacognitive Reflection Completed"],
+        "meditation_notes": reflection.content,
+        "is_terminal": is_hard_stop,
+        "meditation_triggered": True,  # Permanent flag to prevent repeat meditation
+        "consecutive_research_failures": 0, # Reset to allow one final attempt
+        "retry_count": state.get("retry_count", 0) + 1 
+    }
+
+def conversational_node(state: NaviState):
+    print("\n💬 [CONVERSATION] Handling Social Input...")
+    
+    user_input = state.get("user_input", "")
+    
+    # We use a distinct persona prompt for social interactions
+    prompt = f"""
+    Respond to the user's query or greeting professionally and conversationally. 
+    
+    USER: {user_input}
+    NAVI:"""
+
+    response = llm_fast.invoke(prompt)
+    
+    return {
+        "final_answer": response.content,
+        "is_conversational": True
+    }
+
+def is_task_input(user_input: str) -> bool:
+    """
+    Determines if the input is a request for action/research or just chitchat.
+    """
+    prompt = f"""
+    Categorize the user input as either 'TASK' or 'CHAT'.
+    TASK: Requires research, coding, math, data analysis, or project planning.
+    CHAT: Greetings, personal questions, compliments, or general conversation.
+    
+    INPUT: "{user_input}"
+    CATEGORY (One word only):"""
+    
+    try:
+        # Using the fast model to keep latency low
+        decision = llm_fast.invoke(prompt).content.strip().upper()
+        return "TASK" in decision
+    except:
+        # Fallback to a basic keyword check if the API fails
+        keywords = ["create", "find", "search", "calculate", "plot", "analyze", "build", "how many"]
+        return any(word in user_input.lower() for word in keywords)
 
 # --- Conditional Routing Logic ---
 def route_after_plan(state: NaviState):
@@ -714,32 +822,76 @@ workflow.add_node("planner", planner_node)
 workflow.add_node("skill_creation", skill_creator_node)
 workflow.add_node("executor", executor_node)
 workflow.add_node("research", research_node)
+workflow.add_node("meditator", meditation_node) 
+workflow.add_node("conversational", conversational_node) 
 
-workflow.set_entry_point("planner")
+# 1. Entry Logic: Decide if it's a Task or Chat
+def route_start(state: NaviState):
+    # We pull 'task' from the state because we injected it in main.py
+    user_query = state.get("task", "") or state.get("user_input", "")
+    
+    if is_task_input(user_query):
+        return "planner"
+    return "conversational"
 
-# --- Planner Routing ---
-workflow.add_conditional_edges(
-    "planner", 
-    route_after_plan, 
+workflow.set_conditional_entry_point(
+    route_start,
     {
-        "skill_creation": "skill_creation", 
-        "research": "research", 
-        END: END 
+        "planner": "planner",
+        "conversational": "conversational"
     }
 )
 
-# --- Technical Edges ---
-workflow.add_edge("research", "skill_creation")
+# 2. Research Routing (The Core Request)
+def route_after_research(state: NaviState):
+    plan = state.get("plan", [])
+    last_step = str(plan[-1]).upper() if plan else ""
+    fail_count = state.get("consecutive_research_failures", 0)
+    
+    # Priority 1: Check if the node explicitly signaled a hard exit
+    if "EXIT" in last_step:
+        # If we've already meditated once and failed again, or hit 2 failures
+        if fail_count > 2:
+            return END
+        # If it's the first major failure, try meditation
+        return "meditator"
+
+    # Priority 2: Failure count-based routing
+    if fail_count == 2:
+        return "meditator"
+    
+    if fail_count > 2:
+        return END
+
+    # If everything is fine, proceed to create the skill
+    return "skill_creation"
+
+
+workflow.add_conditional_edges(
+    "research",
+    route_after_research,
+    {
+        "skill_creation": "skill_creation",
+        "meditator": "meditator",
+        END: END # Research sets a 'maximum retries reached' message here
+    }
+)
+
+# 3. Meditation Routing
+workflow.add_conditional_edges(
+    "meditator",
+    lambda state: "planner" if not state.get("is_terminal") else END,
+    {
+        "planner": "planner",
+        END: END
+    }
+)
+
+# --- Existing Edges ---
+workflow.add_conditional_edges("planner", route_after_plan, {"skill_creation": "skill_creation", "research": "research", END: END})
 workflow.add_edge("skill_creation", "executor")
-
-# --- Executor Routing ---
-workflow.add_conditional_edges(
-    "executor", 
-    route_after_execution, 
-    {
-        "planner": "planner" # Success or Failure, go to Planner to decide next move
-    }
-)
+workflow.add_conditional_edges("executor", route_after_execution, {"planner": "planner"})
+workflow.add_edge("conversational", END)
 
 # Compile
 navi_app = workflow.compile(checkpointer=MemorySaver())
