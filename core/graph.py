@@ -748,12 +748,13 @@ def conversational_node(state: NaviState):
     print("\n💬 [CONVERSATION] Handling Social Input...")
     
     user_input = state.get("user_input", "")
-    
+    task = state.get("task")
     # We use a distinct persona prompt for social interactions
     prompt = f"""
     Respond to the user's query or greeting professionally and conversationally. 
     
     USER: {user_input}
+    TASK: {task}
     NAVI:"""
 
     response = llm_fast.invoke(prompt)
@@ -852,7 +853,7 @@ def route_after_research(state: NaviState):
     if "EXIT" in last_step:
         # If we've already meditated once and failed again, or hit 2 failures
         if fail_count > 2:
-            return END
+            return "conversational"
         # If it's the first major failure, try meditation
         return "meditator"
 
@@ -860,8 +861,6 @@ def route_after_research(state: NaviState):
     if fail_count == 2:
         return "meditator"
     
-    if fail_count > 2:
-        return END
 
     # If everything is fine, proceed to create the skill
     return "skill_creation"
@@ -873,7 +872,7 @@ workflow.add_conditional_edges(
     {
         "skill_creation": "skill_creation",
         "meditator": "meditator",
-        END: END # Research sets a 'maximum retries reached' message here
+        "conversational": "conversational" # Research sets a 'maximum retries reached' message here
     }
 )
 
