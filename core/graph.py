@@ -131,6 +131,10 @@ def planner_node(state: NaviState):
     # helper for scannability
     last_step = str(plan[-1]).upper() if plan else ""
     
+    if state.get("meditation_notes"):
+        return {
+            "plan": plan + ["### 🛠️ ACTION: CODE"]
+        }
     
     if final_ans_raw and not last_error:
         print("✨ Planner: Task complete. Generating final summary...")
@@ -307,6 +311,7 @@ def skill_creator_node(state: NaviState):
     last_error = state.get('last_error', "None")
     retry_count = state.get("retry_count", 0)
     research_notes = next((p for p in reversed(plan) if "### RESEARCH NOTES" in p or "### DIAGNOSIS" in p), "")
+    meditation_notes = state.get("meditation_notes") if state.get("meditation_notes") else ""
     previous_code = state.get("generated_tool_code")
 
     # CONSTRUCT THE PROMPT DYNAMICALLY
@@ -387,6 +392,9 @@ def skill_creator_node(state: NaviState):
     {new_strategy}
     ### RECOMMENDED CODE:
     {recommended_code}
+
+    ### MEDITATION NOTES:
+    {meditation_notes}
 
     ### MANDATORY EXECUTION RULES (CRITICAL):
     1. **NO VERBOSE PRINTING:** If the task involves simulations (Monte Carlo), loops, or large datasets, NEVER print individual iteration results. 
@@ -739,8 +747,8 @@ def meditation_node(state: NaviState):
         "plan": state.get("plan", []) + ["### 🧘 Metacognitive Reflection Completed"],
         "meditation_notes": reflection.content,
         "is_terminal": is_hard_stop,
-        "meditation_triggered": True,  # Permanent flag to prevent repeat meditation
-        "consecutive_research_failures": 0, # Reset to allow one final attempt
+        "meditation_triggered": True,  # Permanent flag to prevent repeat meditation,
+        "meditation_notes": reflection.content,
         "retry_count": state.get("retry_count", 0) + 1 
     }
 
