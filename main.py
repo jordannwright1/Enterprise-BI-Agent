@@ -18,7 +18,12 @@ init_db()
 def display_navi_chart(b64_string):
     try:
         # Strip potential whitespace or markers
-        img_data = base64.b64decode(b64_string.strip())
+        clean_b64 = b64_string.strip()
+        # Handle cases where the string might still have common prefixes
+        if "," in clean_b64:
+            clean_b64 = clean_b64.split(",")[-1]
+            
+        img_data = base64.b64decode(clean_b64)
         img = Image.open(io.BytesIO(img_data))
         st.image(img, caption="Navi's Generated Analysis", use_container_width=True)
     except Exception as e:
@@ -58,11 +63,10 @@ def render_sidebar():
         st.subheader("💡 Example Prompts")
         st.info("Click a prompt to copy it, then paste it into the chat.")
         
-        # Placeholder for your future favorite prompts
         example_prompts = [
             "Analyze Bitcoin mining profitability with a dual-axis chart comparing costs vs price points.",
             "Create a radar chart comparing a sustainable coffee brand vs a generic cafe in London.",
-            "PLACEHOLDER: Add your complex prompt here later..."
+            "Analyze market entry into Japan for luxury skincare with a profitability heatmap."
         ]
         
         for ex in example_prompts:
@@ -84,17 +88,20 @@ if "messages" not in st.session_state:
 # --- 2. UI LAYOUT ---
 st.title("Navi: Self-Learning Multi-Purpose Agent")
 st.markdown("""
-Navi is an advanced AI agent that thinks, researches, and executes code in real-time. Navi can identify when it lacks a tool, write its own Python scripts and auto install dependencies, 
-self debug errors, research fixes for persistent errors, and create complex data visualizations completely autonomously.
+Navi is an advanced AI agent that thinks, researches, and executes code in real-time.
 """)
 
 st.markdown("---")
 
 render_sidebar()
 
+# Display Messages (Including stored images if any)
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
+        if "images" in msg and msg["images"]:
+            for img_str in msg["images"]:
+                display_navi_chart(img_str)
 
 # User Input
 if prompt := st.chat_input("Assign a task to Navi..."):
@@ -124,10 +131,11 @@ if prompt := st.chat_input("Assign a task to Navi..."):
 
     with st.chat_message("assistant"):
         final_ans = None
-        current_image_payload = None
+        current_image_payload = []
         is_finished = False
         
         with st.status("Navi is processing...", expanded=True) as status:
+            # We use stream mode "updates" to watch the nodes work
             for event in navi_app.stream(initial_input, config, stream_mode="updates"):
                 for node_name, node_output in event.items():
                     
@@ -140,51 +148,64 @@ if prompt := st.chat_input("Assign a task to Navi..."):
                     if "plan" in node_output and node_output["plan"]:
                         plan_text = node_output["plan"][-1]
                         st.write(f"📝 {plan_text}")
-                        # Check for EXIT signal to handle final render
                         if "EXIT" in plan_text.upper() or "TERMINATED" in plan_text.upper():
                             is_finished = True
                     
-                    if "final_answer" in node_output:
+                    if "final_answer" in node_output and node_output["final_answer"]:
                         final_ans = node_output["final_answer"]
 
+                    # CRITICAL FIX: Ensure we accumulate the payload if it's sent
                     if "image_payload" in node_output and node_output["image_payload"]:
-                        current_image_payload = node_output["image_payload"]
+                        # Append new images if they aren't already in our local list
+                        for img in node_output["image_payload"]:
+                            if img not in current_image_payload:
+                                current_image_payload.append(img)
             
+            # Final Safety Catch: If loop ended but images weren't caught in 'updates',
+            # fetch them from the final state of the graph
+            final_state = navi_app.get_state(config).values
+            if not current_image_payload and final_state.get("image_payload"):
+                current_image_payload = final_state.get("image_payload")
+            if not final_ans and final_state.get("final_answer"):
+                final_ans = final_state.get("final_answer")
+
             status.update(label="Process Finished", state="complete", expanded=False)
 
-        # --- FINAL RENDERING LOGIC (The "Double Summary" Filter) ---
-        if final_ans and is_finished:
+        # --- FINAL RENDERING LOGIC ---
+        if final_ans:
+            # Detection of placeholders
             placeholders = re.findall(r"\[IMAGE_DATA_HIDDEN_(\d+)\]", final_ans)
+            stored_images = []
 
             # SCENARIO A: INLINE MULTI-IMAGE INJECTION
-            if placeholders and isinstance(current_image_payload, list):
+            if placeholders and current_image_payload:
                 split_pattern = r"(?:Figure:\s*|Plot:\s*)?\(?\[IMAGE_DATA_HIDDEN_\d+\]\)?[:\s]*"
                 parts = re.split(split_pattern, final_ans)
                 
+                # Render to UI
                 for i, part in enumerate(parts):
                     if part.strip():
                         st.markdown(part.strip())
                     if i < len(current_image_payload):
                         display_navi_chart(current_image_payload[i])
+                        stored_images.append(current_image_payload[i])
                 
-                st.session_state.messages.append({"role": "assistant", "content": final_ans})
+                st.session_state.messages.append({"role": "assistant", "content": final_ans, "images": stored_images})
 
-            # SCENARIO B: SINGLE PLACEHOLDER
+            # SCENARIO B: SINGLE GENERIC PLACEHOLDER
             elif "[IMAGE_DATA_HIDDEN]" in final_ans and current_image_payload:
                 display_text = final_ans.replace("[IMAGE_DATA_HIDDEN]", "").replace("Figure:", "").strip()
                 st.markdown(display_text)
-                img_to_show = current_image_payload[0] if isinstance(current_image_payload, list) else current_image_payload
+                img_to_show = current_image_payload[0]
                 display_navi_chart(img_to_show)
-                st.session_state.messages.append({"role": "assistant", "content": display_text})
+                st.session_state.messages.append({"role": "assistant", "content": display_text, "images": [img_to_show]})
 
-            # SCENARIO C: DIRECT BASE64
-            elif re.search(r"(iVBORw0KGgoAAAANSUhEUg[\w\+\/\s\n=]+)", final_ans):
-                b64_match = re.search(r"(iVBORw0KGgoAAAANSUhEUg[\w\+\/\s\n=]+)", final_ans)
-                chart_data = b64_match.group(1).strip()
-                display_text = final_ans.replace(chart_data, "").replace("Figure:", "").strip()
-                st.markdown(display_text)
-                display_navi_chart(chart_data)
-                st.session_state.messages.append({"role": "assistant", "content": display_text})
+            # SCENARIO C: NO PLACEHOLDERS BUT IMAGES EXIST (Append to bottom)
+            elif current_image_payload:
+                st.markdown(final_ans)
+                for img_str in current_image_payload:
+                    display_navi_chart(img_str)
+                st.session_state.messages.append({"role": "assistant", "content": final_ans, "images": current_image_payload})
 
             # SCENARIO D: TEXT ONLY
             else:

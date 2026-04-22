@@ -422,17 +422,21 @@ def skill_creator_node(state: NaviState):
 
     CRITICAL: DO NOT use BeautifulSoup. If you use bs4, the machine will crash.
 
-    ### 🚨 BINARY SAFETY PROTOCOL (CRITICAL)
-    If you generate a plot or image, you MUST follow this exact pattern to avoid UTF-8 decode errors:
-    1. Use `buf = io.BytesIO()`
-    2. Use `plt.savefig(buf, format='png')`
-    . Use `buf.seek(0)`
-    4. Use `img_str = base64.b64encode(buf.read()).decode('ascii')`
-    5. Return the string: `f"---IMAGE_START---{{img_str}}---IMAGE_END---"`
+    If you encounter a '0x89' or 'utf-8 codec' error, it means you forgot to .decode('ascii') your base64 object.
 
-    NEVER return or print raw bytes. If you encounter a '0x89' or 'utf-8 codec' error, it means you forgot to .decode('ascii') your base64 object.
+    ### 🚨 VISUALIZATION PROTOCOL
+    To avoid '0x89' and 'undefined' errors, you must write the following EXACT code block in your execute_tool function:
 
-    Return ALL visualizations as base64 strings.
+    ```python
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png')
+    buf.seek(0)
+    final_chart = base64.b64encode(buf.read()).decode('ascii')
+    plt.close()
+    return f"Analysis Complete. [IMAGE_DATA_HIDDEN_0] {{final_chart}}"
+    ```
+
+    Return ALL visualizations as base64 strings in the console, don't create png files.
 
     ### OUTPUT FORMAT:
     Ensure the entire execute_tool() function and its imports are provided in a single code block. DO NOT include any text outside the code block. If you are building on previous code, re-write the entire function; do not provide snippets. 
