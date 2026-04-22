@@ -179,6 +179,8 @@ def planner_node(state: NaviState):
         
         Provide a friendly, professional summary of the raw data. Make sure the answer reflects what the user was asking for in the task. Never tell the user you can't produce images if they ask you to provide an image, simply return the data and continue your response.
 
+        
+
         Never provide individual data points used to generate graphs.
 
         Never provide code blocks in your response.
