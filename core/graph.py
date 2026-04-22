@@ -24,7 +24,7 @@ def install_package(package):
 
 def get_skill_name(task_description: str) -> str:
     """Uses the fast LLM to generate a creative, snake_case codename."""
-    prompt = f"Generate a 2-3 word creative snake_case codename for this task: {task_description}. Output ONLY the name.  The name MUST be 3 words maximum."
+    prompt = f"Generate a 3 word creative snake_case codename for this task: {task_description}. Output ONLY the name.  The name MUST be ONLY 3 words total.  DO NOT include your thoughts or reasoning in the snake case codename you generate."
     response = llm_fast.invoke(prompt)
     # Clean up the output to ensure it's a valid filename/key
     name = re.sub(r'[^a-z0-9_]', '', response.content.lower().replace(" ", "_"))
@@ -101,6 +101,9 @@ def extract_section(text, section_header):
     """
     Extracts content starting from a specific header until the next '###' header.
     """
+
+    if not text or not isinstance(text, str):
+        return "No specific notes provided."
     # Pattern looks for the header and captures everything until the next '###' or end of string
     pattern = rf"{re.escape(section_header)}\s*(.*?)(?=\n###|$)"
     match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
@@ -132,6 +135,8 @@ def planner_node(state: NaviState):
     last_step = str(plan[-1]).upper() if plan else ""
     
     if state.get("meditation_notes"):
+        if retry_count >= 2:
+            return "Maximum tries reached!  Stopping here to prevent an infinite loop. Please try rephrasing your question"
         return {
             "plan": plan + ["### 🛠️ ACTION: CODE"]
         }
@@ -169,12 +174,14 @@ def planner_node(state: NaviState):
             print(f"🔄 Planner: Attempt {retry_count + 1} failed. Retrying CODE.")
             return {
                 "plan": plan + ["### 🛠️ ACTION: CODE"],
+                "task": task,
                 "retry_count": retry_count + 1
             }
         else:
             print("🚨 Planner: Informed attempts failed. Returning to RESEARCH for new strategy.")
             return {
                 "plan": plan + ["### 🔍 ACTION: RESEARCH"],
+                "task": task,
                 "retry_count": 0 
             }
 
@@ -184,6 +191,7 @@ def planner_node(state: NaviState):
         return {
             "plan": plan + ["### 🛠️ ACTION: CODE"],
             "retry_count": 0,
+            "task": task,
             "generated_tool_code": state.get("generated_tool_code") 
         }
     
@@ -198,12 +206,13 @@ def planner_node(state: NaviState):
         return {
             "plan": plan + ["### 💾 ACTION: LOAD_SKILL"],
             "generated_tool_code": existing_skill['code'],
+            "task": task,
             "packages": existing_skill.get('packages', []),
             "retry_count": 0
         }
 
     # DEFAULT (Initial Start)
-    return {"plan": plan + ["### 🛠️ ACTION: CODE"], "retry_count": 0}
+    return {"plan": plan + ["### 🛠️ ACTION: CODE"], "retry_count": 0, "task": task}
 
 def extract_dependencies(code):
     # 1. Extract all top-level imports and 'from x import y'
@@ -240,6 +249,7 @@ def research_node(state: NaviState):
     past_strategies = state.get("past_strategies", [])
     failed_code = state.get("generated_tool_code")
     res_fails = state.get("consecutive_research_failures", 0) + 1
+    
     # 1. Error Identification
     if raw_error is None:
         if final_answer:
@@ -276,27 +286,42 @@ def research_node(state: NaviState):
        - If specific elements were None, propose a more defensive container search.
     
     ### 📋 OUTPUT FORMAT
-    ### NEW_STRATEGY_NAME
-    <Approach Title>
-    ### DIAGNOSIS
-    <Why the old code failed>
-    ### RECOMMENDED_CODE
-    <Pure Python implementation using requests/BS4>
+    Respond ONLY in the following JSON format. Ensure the "code" value is a single string with escaped newlines:
+    {{
+        "diagnosis": "Short paragraph summary of the error",
+        "solution_logic": "Two sentence strategy",
+        "code": "The corrected python code block"
+    }}
     """
-
+    # 1. Invoke the LLM
+    raw_response = llm_fast.invoke(reasoning_prompt).content.strip()
+    
+    # 2. Clean Markdown Wrappers (e.g., ```json ... ```)
+    # This prevents json.loads from failing due to markdown formatting
+    clean_json = re.sub(r'^```json\s*|```$', '', raw_response, flags=re.MULTILINE | re.IGNORECASE).strip()
+    
     try:
-        response = llm_fast.invoke(reasoning_prompt).content.strip()
-        new_strategy = extract_section(response, "### NEW_STRATEGY_NAME")
+        # 3. Primary Attempt: Standard JSON Parse
+        data = json.loads(clean_json)
+        diagnosis = data.get("diagnosis", "No diagnosis provided.")
+        isolated_code = data.get("code", "")
         
-        return {
-        "plan": state.get("plan", []) + [f"### RESEARCH NOTES\n{response}"],
-        "last_error": None,
-        "consecutive_research_failures": res_fails,
-        "past_strategies": state.get("past_strategies", []) + [new_strategy],
-        "retry_count": state.get("retry_count", 0)
-    }
     except Exception as e:
-        return {"plan": state.get("plan", []) + [f"### RESEARCH FAILED: {str(e)}"]}
+        # 4. Secondary Attempt: Regex Fallback
+        # If the LLM messes up the JSON structure, we manually hunt for the keys
+        diag_match = re.search(r'"diagnosis":\s*"(.*?)"', clean_json, re.DOTALL)
+        code_match = re.search(r'"code":\s*"(.*?)"', clean_json, re.DOTALL)
+        
+        diagnosis = diag_match.group(1) if diag_match else f"JSON Parse Error: {str(e)}"
+        isolated_code = code_match.group(1) if code_match else clean_json
+    
+    # 5. Return updated state
+    return {
+        "research_notes": isolated_code, # Sent to Skill Creator
+        "last_error": f"### 🔍 DIAGNOSIS\n{diagnosis}", # Sent to Streamlit UI
+        "consecutive_research_failures": state.get("consecutive_research_failures", 0) + 1,
+        "plan": state.get("plan", []) + [f"### 🔍 RESEARCH COMPLETE: {diagnosis}"]
+    }
         
 
 # --- Node 2: Skill Creator (The Self-Learning Node) ---
@@ -310,7 +335,7 @@ def skill_creator_node(state: NaviState):
     plan = state.get('plan', [])
     last_error = state.get('last_error', "None")
     retry_count = state.get("retry_count", 0)
-    research_notes = next((p for p in reversed(plan) if "### RESEARCH NOTES" in p or "### DIAGNOSIS" in p), "")
+    research_notes = state.get("research_notes")
     meditation_notes = state.get("meditation_notes") if state.get("meditation_notes") else ""
     previous_code = state.get("generated_tool_code")
 
@@ -327,8 +352,6 @@ def skill_creator_node(state: NaviState):
         ### TASK CONTEXT
         {task}
 
-        ### PREVIOUS ATTEMPT
-        {previous_code}
 
         ### RESEARCHER'S RECOMMENDATION
 
@@ -383,15 +406,10 @@ def skill_creator_node(state: NaviState):
     {task}
 
     ### PREVIOUS ATTEMPT & ERROR
-    {f"CODE: {previous_code}\nERROR: {last_error}" if previous_code else "Fresh Attempt."}
+    {f"CODE: {last_error}" if last_error else ""}
 
     ### RESEARCHER'S GUIDANCE
     {research_notes if research_notes else "Use standard best practices for this domain."}
-
-    ### RECOMMENDED STRATEGY:
-    {new_strategy}
-    ### RECOMMENDED CODE:
-    {recommended_code}
 
     ### MEDITATION NOTES:
     {meditation_notes}
@@ -467,7 +485,6 @@ def execute_tool():
 
     except Exception as e:
         # Return the error directly so the Researcher can see it
-        return f"CRITICAL_ERROR: (the error, str(e))"
     ```
     """
     try:
@@ -657,7 +674,7 @@ if __name__ == "__main__":
                 }
 
             # --- VALIDATION: SOFT ERRORS ---
-            soft_error_keywords = ["failed to", "error:", "none type", "empty", "syntax error", "exception"]
+            soft_error_keywords = ["failed to", "error:", "none type", "empty", "syntax error", "exception", "zero results found on page", "object has no attribute", "no results", "not found"]
             if any(k in clean_for_llm.lower() for k in soft_error_keywords):
                 return {
                     "last_error": f"### ⚠️ Logic Failure\n{clean_for_llm}",
@@ -716,7 +733,7 @@ def meditation_node(state: NaviState):
     error_log = state.get("last_error", "No error log found.")
     research_notes = state.get("research_notes", "No research conducted.")
     failed_code = state.get("generated_tool_code", "No code generated.")
-    task = state.get("current_task", "Unknown Task")
+    task = state.get("task", "Unknown Task")
 
     prompt = f"""
     You are the Metacognitive Layer of Navi. Analyze the persistent failure in our execution loop.
@@ -745,7 +762,6 @@ def meditation_node(state: NaviState):
     
     return {
         "plan": state.get("plan", []) + ["### 🧘 Metacognitive Reflection Completed"],
-        "meditation_notes": reflection.content,
         "is_terminal": is_hard_stop,
         "meditation_triggered": True,  # Permanent flag to prevent repeat meditation,
         "meditation_notes": reflection.content,
@@ -757,12 +773,17 @@ def conversational_node(state: NaviState):
     
     user_input = state.get("user_input", "")
     task = state.get("task")
+    last_error = state.get("last_error")
     # We use a distinct persona prompt for social interactions
     prompt = f"""
     Respond to the user's query or greeting professionally and conversationally. 
     
+    If there is a last error, that means the maximum amount of retries has been reached.  Inform the user of this and ask them to try rephrasing their question.
+    
     USER: {user_input}
     TASK: {task}
+    LAST ERROR: {last_error if last_error else ""}
+
     NAVI:"""
 
     response = llm_fast.invoke(prompt)
@@ -861,7 +882,7 @@ def route_after_research(state: NaviState):
     if "EXIT" in last_step:
         # If we've already meditated once and failed again, or hit 2 failures
         if fail_count > 2:
-            return "conversational"
+            return "planner"
         # If it's the first major failure, try meditation
         return "meditator"
 
@@ -880,7 +901,7 @@ workflow.add_conditional_edges(
     {
         "skill_creation": "skill_creation",
         "meditator": "meditator",
-        "conversational": "conversational" # Research sets a 'maximum retries reached' message here
+        "planner": "planner" # Research sets a 'maximum retries reached' message here
     }
 )
 
