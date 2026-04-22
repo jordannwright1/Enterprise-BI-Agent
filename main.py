@@ -61,12 +61,24 @@ def render_sidebar():
         
         # --- EXAMPLE PROMPTS SECTION ---
         st.subheader("💡 Example Prompts")
-        st.info("Click a prompt to copy it, then paste it into the chat.")
+        st.info("Click the prompt to copy it, then paste it into the chat.")
         
         example_prompts = [
-            "Analyze Bitcoin mining profitability with a dual-axis chart comparing costs vs price points.",
-            "Create a radar chart comparing a sustainable coffee brand vs a generic cafe in London.",
-            "Analyze market entry into Japan for luxury skincare with a profitability heatmap."
+            """We are researching a market entry into Japan for a luxury skincare line.
+
+            Web Intelligence: > - Find the current exchange rate for USD to JPY (Assume 150.0 if blocked). Search for the 'Average Price of a Luxury Face Cream in Tokyo' (Assume ¥25,000 if blocked).
+
+            The Optimization Skill: Write a script to: Convert that Tokyo price to USD using the real-time rate you found.
+
+            Simulate a Sensitivity Analysis: How much profit do we make per unit if our manufacturing cost is $40 USD, but the Yen fluctuates by +/- 10%?
+
+            Create and display a Heatmap showing Profit per unit based on:
+
+            Y-Axis: Exchange Rate (135.0 to 165.0)
+
+            X-Axis: Local Sale Price in JPY (¥20,000 to ¥30,000)
+
+            Cultural Synthesis: Based on your research, suggest 3 'J-Beauty' trends we should incorporate into our marketing to appeal to Ginza shoppers."""
         ]
         
         for ex in example_prompts:
@@ -88,7 +100,7 @@ if "messages" not in st.session_state:
 # --- 2. UI LAYOUT ---
 st.title("Navi: Self-Learning Multi-Purpose Agent")
 st.markdown("""
-Navi is an advanced AI agent that thinks, researches, and executes code in real-time.
+Navi is an advanced AI agent that thinks, researches, and executes code in real-time.  Use the sidebar to copy the test prompt, or create your own prompt.
 """)
 
 st.markdown("---")

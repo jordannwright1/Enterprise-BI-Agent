@@ -14,7 +14,7 @@ class NaviState(TypedDict):
     last_error: str
     research_notes: str
     image_payload: List[str]     # Standardized B64 strings for the UI
-    
+    current_skill_id: str
     # Metacognitive & Routing Flags
     retry_count: int
     consecutive_failures: int    # Tracking code execution fails
