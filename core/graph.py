@@ -6,10 +6,8 @@ from langchain_core.messages import AIMessage, HumanMessage
 from core.state import NaviState
 from langgraph.checkpoint.memory import MemorySaver
 import json
-from langchain_google_genai import ChatGoogleGenerativeAI
 import subprocess
 import sys
-from langchain_ollama import ChatOllama
 import groq
 from importlib import metadata
 import sqlite3
@@ -129,27 +127,7 @@ def delete_skill(keyword):
 # 70B for Planning/Learning, 8B for quick Execution checks
 llm_pro = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
 llm_fast = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
-llm_gemini_25 = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash-lite",
-    google_api_key=os.environ.get("GEMINI_API_KEY"),
-    temperature=0.7
-)
-llm_gemini_20 = ChatGoogleGenerativeAI(
-    model="gemini-2.0-flash",
-    google_api_key=os.environ.get("GEMINI_API_KEY"),
-    temperature=0.7
-)
-llm_gemini_15 = ChatGoogleGenerativeAI(
-    model="gemini-1.5-flash",
-    google_api_key=os.environ.get("GEMINI_API_KEY"),
-    temperature=0.7
-)
 
-llm_qwen_cloud = ChatOllama(
-    model="qwen2.5-coder:7b",
-    temperature=0.1,  # Keep it ultra-precise for coding
-    num_ctx=32768     
-)
 
 # --- Node 1: Planner ---
 def planner_node(state: NaviState):
@@ -158,93 +136,106 @@ def planner_node(state: NaviState):
     retry_count = state.get("retry_count", 0)
     plan = state.get("plan", [])
     task = state.get("task")
+    meditation_notes = state.get("meditation_notes")
 
-    # helper for scannability
+    # Helper for scannability
     last_step = str(plan[-1]).upper() if plan else ""
     
-    if state.get("meditation_notes"):
+    # 1. MEDITATION / TERMINAL CHECK
+    if meditation_notes:
         if retry_count >= 3:
-            print("⚠️ Planner: Maximum tries reached!")
-            return "Maximum tries reached!  Stopping here to prevent an infinite loop. Please try rephrasing your question"
+            print("🛑 Planner: Maximum tries reached. Triggering Hard Stop.")
+            # We set is_terminal so the conditional edge routes to conversation
+            return {
+                "is_terminal": True,
+                "plan": plan + ["### 🏁 ACTION: TERMINATED"]
+            }
+        
+        print(f"🧘 Planner: Meditation received. Attempting recovery {retry_count + 1}/3")
         return {
-            "plan": plan + ["### 🛠️ ACTION: CODE"], "retry_count": state.get("retry_count", 0) + 1
+            "plan": plan + ["### 🛠️ ACTION: CODE"],
+            "retry_count": retry_count + 1,
+            "last_error": last_error # PERSIST the error so Researcher can see it
         }
     
+    # 2. SUCCESS PATH (Only if no errors are pending)
     if final_ans_raw and not last_error:
+    # 1. Check if we've already finished to prevent loops
+        if "EXIT" in last_step:
+            return {}
+
         print("✨ Planner: Task complete. Generating final summary...")
-        
+    
+        # 2. Strip Base64 to prevent the 413 error
+        clean_data = re.sub(r'iVBORw0KGgoAAAANSUhEUg[A-Za-z0-9\+/=\s\n]+', '[IMAGE_DATA_HIDDEN]', str(final_ans_raw))
+    
         format_prompt = f"""
         You are Navi, a professional AI assistant. 
         User Task: {task}
-        Raw Data Found: {final_ans_raw}
-        
-        Provide a friendly, professional summary of the raw data. Make sure the answer reflects what the user was asking for in the task. Never tell the user you can't produce images if they ask you to provide an image, simply return the data and continue your response.
-
-        Don't comment on image data at all in your response.
-
-
-        Never provide individual data points used to generate graphs.
-
-        Never provide code blocks in your response.
-
-        
-        List data clearly (tables, reports, or bullets).
-        
+        Raw Data Found: {clean_data}
+    
+        Provide a friendly, professional summary. 
+        - Do not mention or explain the Base64/Image strings.
+        - Never provide individual data points used for graphs.
+        - Never provide code blocks.
+        - Use tables or bullets for clarity.
         """
-        
+    
         summary_response = llm_fast.invoke(format_prompt).content.strip()
-        
-        # Return the summary as the final answer and signal the EXIT
+    
+        # 3. FIX: We overwrite final_answer with the clean summary 
+        # and explicitly clear the 'raw' logs/errors to signal completion
         return {
-            "final_answer": summary_response,
-            "last_error": None,
+            "final_answer": summary_response, # This becomes the ONLY thing the user sees
+            "last_error": None,               # Clear errors to satisfy the route_after_plan logic
             "plan": plan + ["### 🏁 ACTION: EXIT"]
         }
 
+    # 3. ERROR HANDLING / RETRY PATH
     if last_error:
         if retry_count < 1:
-            print(f"🔄 Planner: Attempt {retry_count + 1} failed. Retrying CODE.")
+            print(f"🔄 Planner: Fast Retry (Attempt {retry_count + 1})")
             return {
                 "plan": plan + ["### 🛠️ ACTION: CODE"],
-                "task": task,
+                "last_error": last_error,
                 "retry_count": retry_count + 1
             }
         else:
-            print("🚨 Planner: Informed attempts failed. Returning to RESEARCH for new strategy.")
+            print("🚨 Planner: Informed attempts failed. Routing to RESEARCH.")
             return {
                 "plan": plan + ["### 🔍 ACTION: RESEARCH"],
-                "task": task,
+                "last_error": last_error, 
                 "retry_count": 0 
             }
 
-    # POST-RESEARCH ROUTING
+    # 4. POST-RESEARCH ROUTING
     if "RESEARCH" in last_step:
         print("💡 Planner: Research complete. Routing to Skill Creator.")
         return {
             "plan": plan + ["### 🛠️ ACTION: CODE"],
-            "retry_count": 0,
-            "task": task,
-            "generated_tool_code": state.get("generated_tool_code") 
+            "last_error": last_error,
+            "retry_count": 0
         }
     
-    # INITIAL START - SKILL CHECK
-    # We check for a pre-existing skill before defaulting to a fresh generation
-    skill_id = get_skill_name(task) # Assuming you have this helper
+    # 5. INITIAL START - SKILL CHECK
+    skill_id = get_skill_name(task)
     existing_skill = get_skill(skill_id) 
     
-    if existing_skill and not plan: # Only load on the very first step
-        print(f"🧠 ### 💾 ACTION: LOAD_SKILL")
-        print(f"✅ Planner: Skill '{skill_id}' found in library. Loading successfully.")
+    if existing_skill and not plan:
+        print(f"🧠 ### 💾 ACTION: LOAD_SKILL - {skill_id}")
         return {
             "plan": plan + ["### 💾 ACTION: LOAD_SKILL"],
             "generated_tool_code": existing_skill['code'],
-            "task": task,
             "packages": existing_skill.get('packages', []),
             "retry_count": 0
         }
 
-    # DEFAULT (Initial Start)
-    return {"plan": plan + ["### 🛠️ ACTION: CODE"], "retry_count": 0, "task": task}
+    # 6. DEFAULT START
+    return {
+        "plan": plan + ["### 🛠️ ACTION: CODE"], 
+        "retry_count": 0, 
+        "task": task
+    }
 
 def extract_dependencies(code):
     # 1. Extract all top-level imports and 'from x import y'
@@ -333,17 +324,15 @@ def research_node(state: NaviState):
     """
     
     try:
-        # PRIMARY: Gemini 1.5 Flash
-        raw_response = llm_gemini_25.invoke(reasoning_prompt).content.strip()
+        raw_response = llm_pro.invoke(reasoning_prompt).content.strip()
     except Exception as e:
-        print(f"⚠️ Gemini failed: {e}. Falling back to 70B...")
+        print(f"⚠️ 70B failed: {e}. Falling back to 8B...")
         try:
-            # FALLBACK 1: Llama 70B
-            raw_response = llm_pro.invoke(reasoning_prompt).content.strip()
-        except (groq.RateLimitError, Exception):
-            print("⚠️ 70B Limit or Error! Falling back to 8B...")
-            # FALLBACK 2: Llama 8B
+            # FALLBACK 1: Llama 8B
             raw_response = llm_fast.invoke(reasoning_prompt).content.strip()
+        except (groq.RateLimitError, Exception):
+            print("⚠️ 8B Rate Limit Error")
+            
 
     # Clean Markdown Wrappers
     clean_json = re.sub(r'^```json\s*|```$', '', raw_response, flags=re.MULTILINE | re.IGNORECASE).strip()
@@ -382,10 +371,12 @@ def skill_creator_node(state: NaviState):
     plan = state.get('plan', [])
     last_error = state.get('last_error', "None")
     retry_count = state.get("retry_count", 0)
-    research_notes = state.get("research_notes")
-    meditation_notes = state.get("meditation_notes") if state.get("meditation_notes") else ""
-    previous_code = state.get("generated_tool_code")
+    research_notes = state.get("research_notes", "")
+    meditation_notes = state.get("meditation_notes", "")
+    previous_code = state.get("generated_tool_code", "")
+    executor_logs = state.get("executor_logs", "") # New: pass the actual crash logs
     error_msg = ""
+
     prompt = f"""
     ### ROLE: Principal AI Automation Architect
     
@@ -398,6 +389,7 @@ def skill_creator_node(state: NaviState):
     ### DATA & INTELLIGENCE
     - RESEARCH GUIDANCE: {research_notes if research_notes else "No specific research provided. Use the most modern, stable Python libraries for this domain."}
     - PREVIOUS ERRORS: {f"CODE: {last_error}" if last_error else "None."}
+    - EXECUTION LOGS: {executor_logs if executor_logs else "No logs available."}
     - RECENT CODE: {previous_code}
     - MEDITATION (SELF-REFLECTION): {meditation_notes}
 
@@ -430,97 +422,100 @@ def skill_creator_node(state: NaviState):
 
     CRITICAL: DO NOT use BeautifulSoup. If you use bs4, the machine will crash.
 
+    ### 🚨 BINARY SAFETY PROTOCOL (CRITICAL)
+    If you generate a plot or image, you MUST follow this exact pattern to avoid UTF-8 decode errors:
+    1. Use `buf = io.BytesIO()`
+    2. Use `plt.savefig(buf, format='png')`
+    . Use `buf.seek(0)`
+    4. Use `img_str = base64.b64encode(buf.read()).decode('ascii')`
+    5. Return the string: `f"---IMAGE_START---{{img_str}}---IMAGE_END---"`
+
+    NEVER return or print raw bytes. If you encounter a '0x89' or 'utf-8 codec' error, it means you forgot to .decode('ascii') your base64 object.
+
+    Return ALL visualizations as base64 strings.
 
     ### OUTPUT FORMAT:
     Ensure the entire execute_tool() function and its imports are provided in a single code block. DO NOT include any text outside the code block. If you are building on previous code, re-write the entire function; do not provide snippets. 
     The `execute_tool()` function must return a **string** that acts as a comprehensive report for the user.
-
-    Return ALL visualizations as base64 strings.
 
 
     ```python
     import sys
     import json
     import re
-    # Import necessary libraries based on task (requests, pandas, bs4, etc.)
+    # Import necessary libraries based on task (requests, pandas, etc.)
 
     def execute_tool():
         try:
-            # 1. SETUP: Configuration based on Research Notes
-            
-            # 2. ACTION: Execution of the core logic
-            
-            # 3. VERIFICATION: Explicitly check if output is valid/meaningful
-            # if result_is_junk: raise ValueError("Description of failure")
-            
-            # 4. REPORTING: Format a concise, data-rich summary
+            # Logic here
             return summary
         except Exception as e:
-            return f"CRITICAL_FAILURE: {error_msg}"
+            return f"CRITICAL_FAILURE: {{e}}"
     ```
     """
 
+    # Recency Bias Reinforcement
     prompt += f"""
-    FINAL RECAP OF CONSTRAINTS:
-    1. You MUST 'import requests, re, json' at the top.
-    2. You MUST NOT use BeautifulSoup.
-    3. Use the RESEARCH STRATEGY provided: {research_notes}
-    4. Prioritize {meditation_notes} above all else if present.
+    ### FINAL RECAP OF CONSTRAINTS (MANDATORY):
+    1. You MUST include 'import requests, re, json' at the top of the script.
+    2. You MUST NOT use BeautifulSoup (bs4).
+    3. STRATEGY OVERRIDE: {meditation_notes if meditation_notes else "Follow the research guidance."}
     """
+
     # Tiered Intelligence Waterfall
     try:
-    # TIER 1: The Iteration Workhorse (Kimi)
-        print("🌙 Attempting 70B...")
+        print("🌙 Attempting 70B (Skill Creator)...")
         response = llm_pro.invoke(prompt)
         code = extract_clean_code(response.content)
         print("✅ Success with 70B")
     except Exception as e:
-            try:
-                print("🔄 Exhausted/Busy. Falling back to 8B")
-                response = llm_fast.invoke(prompt)
-                code = extract_clean_code(response.content)
-                print("✅ Success with 8B")
-            except Exception as e2:
-                print(str(e2))
-                
+        print(f"🔄 70B Exhausted/Busy: {e}. Falling back to 8B...")
+        response = llm_fast.invoke(prompt)
+        code = extract_clean_code(response.content)
+        print("✅ Success with 8B")
 
-    
-
+    if not code:
+        return {"last_error": "### ❌ Error\nNo Python code found in LLM response."}
 
     try:
+        # Validate syntax before attempting to run/install
         ast.parse(code)
         
-        # --- DYNAMIC DEPENDENCY & SAVING ---
+        # --- DYNAMIC DEPENDENCY MANAGEMENT ---
         final_packages = extract_dependencies(code)
 
         if final_packages:
-            # Capture the list of packages that failed to install
             failed_installs = ensure_packages(final_packages)
             
-            # If any package failed, we halt and report to the Planner
             if failed_installs:
-                error_msg = f"### ❌ Dependency Error\nCould not install: {', '.join(failed_installs)}. Please research an alternative library or approach."
-                print(f"⚠️ {error_msg}")
+                error_msg = f"### ❌ Dependency Error\nCould not install: {', '.join(failed_installs)}."
                 return {
                     "last_error": error_msg,
                     "plan": state.get('plan', []) + [f"### ⚠️ Install Failed: {failed_installs}"]
                 }
 
+        # Generate the name but DO NOT SAVE yet. Executor will save on success.
         task_id = get_skill_name(task)
+        
         return {
             "generated_tool_code": code,
             "packages": final_packages,
-            "current_skill_id": task_id, # Pass this forward to the Executor
-            "last_error": error_msg,
+            "current_skill_id": task_id, 
+            "last_error": last_error, # Pass the error forward so it's not wiped from state
             "plan": state.get('plan', []) + [f"### 🛠 Code Generated: {task_id}"]
         }
     
     except SyntaxError as e:
-        return {"last_error": f"### ❌ Syntax Error\n{str(e)}"}
+        return {
+            "last_error": f"### ❌ Syntax Error in Generated Code\n{str(e)}",
+            "plan": state.get('plan', []) + ["### ❌ Syntax Error"]
+        }
     except Exception as e:
-        # Catch-all safety net for the creator node
-        return {"last_error": f"### ❌ Skill Creator Error\n{str(e)}"}
-        
+        return {
+            "last_error": f"### ❌ Skill Creator Error\n{str(e)}",
+            "plan": state.get('plan', []) + ["### ❌ Creator Node Error"]
+        }
+            
 
 
 # --- Node 3: Executor ---
@@ -531,6 +526,13 @@ import sys
 import os
 import re
 
+import textwrap
+import tempfile
+import subprocess
+import os
+import sys
+import re
+
 def executor_node(state: NaviState):
     print("\n🚀 [SUBPROCESS] Starting Lite Execution...")
     
@@ -538,17 +540,21 @@ def executor_node(state: NaviState):
     packages = state.get('packages', []) 
     retry_count = state.get('retry_count', 0)
     current_plan = state.get('plan', [])
+    task = state.get("task")
 
     if not code:
         return {
             "last_error": "### ❌ Execution Failed\nNo code found.",
-            "retry_count": retry_count + 1
+            "retry_count": retry_count + 1,
+            "plan": current_plan + ["### ❌ No Code to Execute"]
         }
 
     # 1. WRAP & DEDENT (Ensuring strict output markers)
     raw_script = f"""
 import sys
 import io
+import json
+import re
 
 # Force UTF-8 and unbuffered output
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
@@ -581,12 +587,13 @@ if __name__ == "__main__":
                 print(f"⚠️ Warning: Could not install {pkg}: {e}")
 
     # 3. EXECUTION VIA SUBPROCESS
-    with tempfile.NamedTemporaryFile(suffix=".py", delete=False, mode='w', encoding='utf-8') as f:
-        f.write(full_script)
-        temp_path = f.name
-
-    print(f"\n{'='*20} EXECUTION START {'='*20}")
+    temp_path = ""
     try:
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False, mode='w', encoding='utf-8') as f:
+            f.write(full_script)
+            temp_path = f.name
+
+        print(f"\n{'='*20} EXECUTION START {'='*20}")
         process = subprocess.run(
             [sys.executable, temp_path],
             capture_output=True,
@@ -609,96 +616,76 @@ if __name__ == "__main__":
         if match:
             extracted_data = match.group(1).strip()
             
-            # --- ULTIMATE MULTI-STRIPE HARVESTER (FIXES INCORRECT PADDING) ---
+            # --- ULTIMATE MULTI-STRIPE HARVESTER ---
             image_payloads = []
-            # Greedy capture for B64 chars, including internal whitespace and newlines
             b64_pattern = r"(iVBORw0KGgoAAAANSUhEUg[A-Za-z0-9\+/=\s\n]+)"
             all_figs = re.findall(b64_pattern, extracted_data)
             
             clean_for_llm = extracted_data
             for idx, fig_raw in enumerate(all_figs):
-                # 1. Nuclear Clean: Remove every character NOT allowed in Base64
-                image_data_clean = re.sub(r"[^A-Za-z0-9\+/=]", "", fig_raw)
-                
-                # 2. Strip existing padding to re-calculate from scratch
-                image_data_clean = image_data_clean.rstrip('=')
-                
-                # 3. Explicit Re-Padding (Standardize for Linux/Cloud)
+                image_data_clean = re.sub(r"[^A-Za-z0-9\+/=]", "", fig_raw).rstrip('=')
                 remainder = len(image_data_clean) % 4
-                if remainder == 2:
-                    image_data_clean += "=="
-                elif remainder == 3:
-                    image_data_clean += "="
+                if remainder == 2: image_data_clean += "=="
+                elif remainder == 3: image_data_clean += "="
                 
                 image_payloads.append(image_data_clean)
                 
-                # 4. Replace image data with HIDDEN tag for the Planner/LLM
                 container_pattern = r"(<img[^>]*?|Figure:\s*|Plot:\s*)?" + re.escape(fig_raw) + r"([^>]*?>)?"
                 clean_for_llm = re.sub(container_pattern, f"\n\n[IMAGE_DATA_HIDDEN_{idx}]\n\n", clean_for_llm)
 
-            # 2. FINAL TEXT SAFETY NET
+            # TOKEN SAFETY
             if len(clean_for_llm) > 5000:
-                header = clean_for_llm[:2500]
-                footer = clean_for_llm[-2500:]
-                clean_for_llm = f"{header}\n\n... [HEAVY DATA TRUNCATED] ...\n\n{footer}"
-
-            # --- VALIDATION: SHORT/EMPTY DATA ---
-            if len(clean_for_llm) < 30 and "error" not in clean_for_llm.lower():
-                return {
-                    "last_error": "### ⚠️ Logic Failure\nExtracted data was too short.",
-                    "final_answer": None,
-                    "retry_count": retry_count,
-                    "plan": current_plan + ["### ⚠️ Truncated Result"]
-                }
+                clean_for_llm = f"{clean_for_llm[:2500]}\n\n... [TRUNCATED] ...\n\n{clean_for_llm[-2500:]}"
 
             # --- VALIDATION: SOFT ERRORS ---
-            soft_error_keywords = ["failed to", "error:", "none type", "empty", "syntax error", "no job postings found", "exception", "zero results found on page", "object has no attribute", "no results", "not found", "not defined", "critical failure" "critical_failure", "list index out of range", "critical_failure:"]
-            if any(k in clean_for_llm.lower() for k in soft_error_keywords):
+            soft_error_keywords = ["failed to", "error:", "none type", "empty", "syntax error", "exception", "critical_failure"]
+            if any(k in clean_for_llm.lower() for k in soft_error_keywords) or len(clean_for_llm) < 30:
                 return {
                     "last_error": f"### ⚠️ Logic Failure\n{clean_for_llm}",
+                    "executor_logs": output_cleaned,
                     "final_answer": None,
                     "retry_count": retry_count,
                     "plan": current_plan + ["### ⚠️ Execution Logic Failed"]
                 }
             
-            # --- CLEAR SUCCESS ---
-            print(f"✅ EXECUTOR SUCCESS: Captured {len(image_payloads)} images.")
+            # --- CLEAR SUCCESS: SAVE TO DB ---
             task_id = state.get("current_skill_id")
             if task_id:
-                save_skill(task_id, state.get("task"), code, packages)
+                save_skill(task_id, task, code, packages)
                 print(f"💾 Verified Skill Saved: {task_id}")
+
             return {
                 "final_answer": clean_for_llm,
                 "image_payload": image_payloads,
                 "last_error": None,
-                "execution_logs": output_cleaned,
+                "executor_logs": output_cleaned,
                 "retry_count": retry_count,
-                "consecutive_failures": 0,
-                "generated_tool_code": state.get("generated_tool_code"),
-                "plan": state.get("plan", []) + ["### ✅ Execution Success"]
+                "plan": current_plan + ["### ✅ Execution Success"]
             }
 
-        # 5. FAILURE PATH
+        # 5. FAILURE PATH (NO MARKERS)
         log_lines = output_cleaned.splitlines()
         final_crash_log = "\n".join(log_lines[-15:]).strip() 
 
         return {
-            "last_error": f"### ❌ Execution Crash\n```text\n{final_crash_log}\n```",
+            "last_error": f"### ❌ Execution Crash\n{final_crash_log}",
+            "executor_logs": output_cleaned,
             "final_answer": None,
-            "retry_count": retry_count,
+            "retry_count": retry_count + 1,
             "plan": current_plan + [f"### ❌ Attempt {retry_count + 1} Crashed"]
         }
 
     except Exception as e:
         return {
             "last_error": f"### 🏗️ Infrastructure Error\n{str(e)}", 
+            "executor_logs": str(e),
             "final_answer": None,
             "retry_count": retry_count,
             "plan": current_plan + ["### 🏗️ Infra Error"]
         }
     
     finally:
-        if os.path.exists(temp_path):
+        if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)
 
 
@@ -905,7 +892,7 @@ workflow.add_conditional_edges(
 # 3. Meditation Routing
 workflow.add_conditional_edges(
     "meditator",
-    lambda state: "planner" if not state.get("is_terminal") else END,
+    lambda state: "planner" if not state.get("is_terminal") else "conversational",
     {
         "planner": "planner",
         "conversational": "conversational"

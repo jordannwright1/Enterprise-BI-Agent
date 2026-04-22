@@ -44,27 +44,32 @@ def render_sidebar():
         
         # --- RESET MECHANISM ---
         if st.button("🗑️ Reset Agent Memory", use_container_width=True):
-            # 1. Clear Streamlit Caching
             st.cache_data.clear()
             st.cache_resource.clear()
-
-            # 2. Force a new Thread ID (This effectively "wipes" the brain for MemorySaver)
             new_id = str(uuid.uuid4())
             st.session_state.thread_id = new_id
-
-            # 3. Clear UI Messages
             st.session_state.messages = []
-
-            # Note: We REMOVE navi_app.update_state here. 
-            # The next time you hit 'st.chat_input', the initial_input dict 
-            # will provide a fresh 'user_input' to the new thread.
-
             st.success(f"Brain Wipe Successful. New Thread: {new_id[:8]}")
             st.rerun()
+            
+        st.markdown("---")
+        
+        # --- EXAMPLE PROMPTS SECTION ---
+        st.subheader("💡 Example Prompts")
+        st.info("Click a prompt to copy it, then paste it into the chat.")
+        
+        # Placeholder for your future favorite prompts
+        example_prompts = [
+            "Analyze Bitcoin mining profitability with a dual-axis chart comparing costs vs price points.",
+            "Create a radar chart comparing a sustainable coffee brand vs a generic cafe in London.",
+            "PLACEHOLDER: Add your complex prompt here later..."
+        ]
+        
+        for ex in example_prompts:
+            st.code(ex, language=None)
 
 st.set_page_config(page_title="Navi: Autonomous Agent", page_icon="🌐", layout="wide")
 
-# Ensure API Key is present
 if not os.getenv("GROQ_API_KEY"):
     st.error("GROQ_API_KEY not found in .env file.")
     st.stop()
@@ -85,9 +90,8 @@ self debug errors, research fixes for persistent errors, and create complex data
 
 st.markdown("---")
 
-render_sidebar() # Using the refined sidebar function
+render_sidebar()
 
-# Display Messages
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
@@ -121,43 +125,38 @@ if prompt := st.chat_input("Assign a task to Navi..."):
     with st.chat_message("assistant"):
         final_ans = None
         current_image_payload = None
+        is_finished = False
         
         with st.status("Navi is processing...", expanded=True) as status:
             for event in navi_app.stream(initial_input, config, stream_mode="updates"):
                 for node_name, node_output in event.items():
                     
-                    # UI update for the new Meditation Node
                     if node_name == "meditator":
                         st.warning("🧘 Navi is meditating on a persistent error...")
                         if "meditation_notes" in node_output:
                             with st.expander("View Root Cause Analysis"):
                                 st.write(node_output["meditation_notes"])
 
-                    # Progress updates from plan
                     if "plan" in node_output and node_output["plan"]:
                         plan_text = node_output["plan"][-1]
                         st.write(f"📝 {plan_text}")
+                        # Check for EXIT signal to handle final render
+                        if "EXIT" in plan_text.upper() or "TERMINATED" in plan_text.upper():
+                            is_finished = True
                     
-                    # Capture final answer
                     if "final_answer" in node_output:
                         final_ans = node_output["final_answer"]
 
-                    # Capture image payload
                     if "image_payload" in node_output and node_output["image_payload"]:
                         current_image_payload = node_output["image_payload"]
             
             status.update(label="Process Finished", state="complete", expanded=False)
 
-        if final_ans:
-            # Detect indexed placeholders
+        # --- FINAL RENDERING LOGIC (The "Double Summary" Filter) ---
+        if final_ans and is_finished:
             placeholders = re.findall(r"\[IMAGE_DATA_HIDDEN_(\d+)\]", final_ans)
 
-            if current_image_payload and "[IMAGE_DATA_HIDDEN" not in final_ans:
-                st.markdown(final_ans)
-                for img_str in current_image_payload:
-                    display_navi_chart(img_str)
-            
-            # --- SCENARIO A: INLINE MULTI-IMAGE INJECTION ---
+            # SCENARIO A: INLINE MULTI-IMAGE INJECTION
             if placeholders and isinstance(current_image_payload, list):
                 split_pattern = r"(?:Figure:\s*|Plot:\s*)?\(?\[IMAGE_DATA_HIDDEN_\d+\]\)?[:\s]*"
                 parts = re.split(split_pattern, final_ans)
@@ -170,7 +169,7 @@ if prompt := st.chat_input("Assign a task to Navi..."):
                 
                 st.session_state.messages.append({"role": "assistant", "content": final_ans})
 
-            # --- SCENARIO B: SINGLE PLACEHOLDER ---
+            # SCENARIO B: SINGLE PLACEHOLDER
             elif "[IMAGE_DATA_HIDDEN]" in final_ans and current_image_payload:
                 display_text = final_ans.replace("[IMAGE_DATA_HIDDEN]", "").replace("Figure:", "").strip()
                 st.markdown(display_text)
@@ -178,7 +177,7 @@ if prompt := st.chat_input("Assign a task to Navi..."):
                 display_navi_chart(img_to_show)
                 st.session_state.messages.append({"role": "assistant", "content": display_text})
 
-            # --- SCENARIO C: DIRECT BASE64 ---
+            # SCENARIO C: DIRECT BASE64
             elif re.search(r"(iVBORw0KGgoAAAANSUhEUg[\w\+\/\s\n=]+)", final_ans):
                 b64_match = re.search(r"(iVBORw0KGgoAAAANSUhEUg[\w\+\/\s\n=]+)", final_ans)
                 chart_data = b64_match.group(1).strip()
@@ -187,7 +186,7 @@ if prompt := st.chat_input("Assign a task to Navi..."):
                 display_navi_chart(chart_data)
                 st.session_state.messages.append({"role": "assistant", "content": display_text})
 
-            # --- SCENARIO D: TEXT ONLY / CONVERSATIONAL ---
+            # SCENARIO D: TEXT ONLY
             else:
                 st.markdown(final_ans)
                 st.session_state.messages.append({"role": "assistant", "content": final_ans})
