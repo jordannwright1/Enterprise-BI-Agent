@@ -163,7 +163,8 @@ def planner_node(state: NaviState):
     last_step = str(plan[-1]).upper() if plan else ""
     
     if state.get("meditation_notes"):
-        if retry_count >= 2:
+        if retry_count >= 3:
+            print("⚠️ Planner: Maximum tries reached!")
             return "Maximum tries reached!  Stopping here to prevent an infinite loop. Please try rephrasing your question"
         return {
             "plan": plan + ["### 🛠️ ACTION: CODE"], "retry_count": state.get("retry_count", 0) + 1
@@ -179,7 +180,8 @@ def planner_node(state: NaviState):
         
         Provide a friendly, professional summary of the raw data. Make sure the answer reflects what the user was asking for in the task. Never tell the user you can't produce images if they ask you to provide an image, simply return the data and continue your response.
 
-        
+        Don't comment on image data at all in your response.
+
 
         Never provide individual data points used to generate graphs.
 
@@ -435,6 +437,7 @@ def skill_creator_node(state: NaviState):
 
     Return ALL visualizations as base64 strings.
 
+
     ```python
     import sys
     import json
@@ -480,13 +483,9 @@ def skill_creator_node(state: NaviState):
             except Exception as e2:
                 print(str(e2))
                 
+
     
 
-# Final extraction (assuming response is defined by one of the tiers above)
-    
-
-    if not code:
-        return {"last_error": "### ❌ Error\nNo Python code found."}
 
     try:
         ast.parse(code)
@@ -758,19 +757,32 @@ def conversational_node(state: NaviState):
     
     user_input = state.get("user_input", "")
     task = state.get("task")
-    last_error = state.get("last_error")
-    # We use a distinct persona prompt for social interactions
-    prompt = f"""
-    Respond to the user's query or greeting professionally and conversationally. 
-    
-    If there is a last error, that means the maximum amount of retries has been reached.  Inform the user of this and ask them to try rephrasing their question.
-    
-    USER: {user_input}
-    TASK: {task}
-    LAST ERROR: {last_error if last_error else ""}
+    is_terminal = state.get("is_terminal", False)
+    meditation_notes = state.get("meditation_notes", "")
+    last_error = state.get("last_error", "")
 
-    NAVI:"""
+    if is_terminal:
+        prompt = f"""
+        The system has reached a Hard Stop. You must inform the user why the task cannot be completed.
+        
+        REASON FROM MEDITATOR: {meditation_notes}
+        TECHNICAL ERROR: {last_error}
+        
+        INSTRUCTIONS:
+        - Be professional but firm.
+        - Explain exactly what the user needs to provide (e.g., API keys, better URL, etc.).
+        - Do not attempt to solve the task further.
+        """
+    else:
+        prompt = f"""
+        Respond to the user's query or greeting professionally and conversationally. 
+    
+        USER: {user_input}
+        TASK: {task}
+        LAST ERROR: {last_error if last_error else ""}
 
+        NAVI:"""
+    
     response = llm_fast.invoke(prompt)
     
     return {
@@ -896,7 +908,7 @@ workflow.add_conditional_edges(
     lambda state: "planner" if not state.get("is_terminal") else END,
     {
         "planner": "planner",
-        END: END
+        "conversational": "conversational"
     }
 )
 
