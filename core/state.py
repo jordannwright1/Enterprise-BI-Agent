@@ -23,3 +23,4 @@ class NaviState(TypedDict):
     meditation_notes: str        # Storage for the 70B's RCA insights
     is_terminal: bool            # Flag to stop the graph if human help is needed
     is_conversational: bool      # Flag to bypass the tool-use UI
+    execution_logs: str

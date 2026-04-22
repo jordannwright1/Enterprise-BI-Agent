@@ -6,8 +6,10 @@ from langchain_core.messages import AIMessage, HumanMessage
 from core.state import NaviState
 from langgraph.checkpoint.memory import MemorySaver
 import json
+from langchain_google_genai import ChatGoogleGenerativeAI
 import subprocess
 import sys
+from langchain_ollama import ChatOllama
 import groq
 from importlib import metadata
 import sqlite3
@@ -23,9 +25,12 @@ def install_package(package):
         subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
 def get_skill_name(task_description: str) -> str:
-    """Uses the fast LLM to generate a creative, snake_case codename."""
+    """Uses the pro LLM to generate a creative, snake_case codename."""
     prompt = f"Generate a 3 word creative snake_case codename for this task: {task_description}. Output ONLY the name.  The name MUST be ONLY 3 words total.  DO NOT include your thoughts or reasoning in the snake case codename you generate."
-    response = llm_fast.invoke(prompt)
+    try:
+        response = llm_pro.invoke(prompt)
+    except:
+        response = llm_fast.invoke(prompt)
     # Clean up the output to ensure it's a valid filename/key
     name = re.sub(r'[^a-z0-9_]', '', response.content.lower().replace(" ", "_"))
     return name
@@ -110,6 +115,8 @@ def extract_section(text, section_header):
     return match.group(1).strip() if match else ""
 
 
+
+
 def delete_skill(keyword):
     conn = sqlite3.connect("tools/navi_skills.db")
     cursor = conn.cursor()
@@ -122,6 +129,27 @@ def delete_skill(keyword):
 # 70B for Planning/Learning, 8B for quick Execution checks
 llm_pro = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
 llm_fast = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
+llm_gemini_25 = ChatGoogleGenerativeAI(
+    model="gemini-2.5-flash-lite",
+    google_api_key=os.environ.get("GEMINI_API_KEY"),
+    temperature=0.7
+)
+llm_gemini_20 = ChatGoogleGenerativeAI(
+    model="gemini-2.0-flash",
+    google_api_key=os.environ.get("GEMINI_API_KEY"),
+    temperature=0.7
+)
+llm_gemini_15 = ChatGoogleGenerativeAI(
+    model="gemini-1.5-flash",
+    google_api_key=os.environ.get("GEMINI_API_KEY"),
+    temperature=0.7
+)
+
+llm_qwen_cloud = ChatOllama(
+    model="qwen2.5-coder:7b",
+    temperature=0.1,  # Keep it ultra-precise for coding
+    num_ctx=32768     
+)
 
 # --- Node 1: Planner ---
 def planner_node(state: NaviState):
@@ -138,7 +166,7 @@ def planner_node(state: NaviState):
         if retry_count >= 2:
             return "Maximum tries reached!  Stopping here to prevent an infinite loop. Please try rephrasing your question"
         return {
-            "plan": plan + ["### 🛠️ ACTION: CODE"]
+            "plan": plan + ["### 🛠️ ACTION: CODE"], "retry_count": state.get("retry_count", 0) + 1
         }
     
     if final_ans_raw and not last_error:
@@ -249,7 +277,8 @@ def research_node(state: NaviState):
     past_strategies = state.get("past_strategies", [])
     failed_code = state.get("generated_tool_code")
     res_fails = state.get("consecutive_research_failures", 0) + 1
-    
+    logs = state.get("execution_logs")
+    research_notes = state.get("research_notes")
     # 1. Error Identification
     if raw_error is None:
         if final_answer:
@@ -279,6 +308,11 @@ def research_node(state: NaviState):
     Failed Code:  {failed_code if failed_code else "No code generated yet."}
     Last error encountered: {last_error}
 
+    ### EXECUTION LOGS
+    {logs}
+
+    Focus on the last 10 lines of the execution logs. If it's a ModuleNotFoundError, tell the Skill Creator to add the package to the import block. If it's a ValueError from the scraping logic, tell the Skill Creator the browser structure has shifted.  Always give the fix for the error in your response so that it is passed correctly to the skill creator.
+
     ### 🛠️ STRATEGY PIVOT
     1. ANALYZE: Why did the previous logic fail?
     2. DIVERGE: Propose a fundamentally different technical approach.
@@ -293,27 +327,36 @@ def research_node(state: NaviState):
         "code": "The corrected python code block"
     }}
     """
-    # 1. Invoke the LLM
-    raw_response = llm_fast.invoke(reasoning_prompt).content.strip()
     
-    # 2. Clean Markdown Wrappers (e.g., ```json ... ```)
-    # This prevents json.loads from failing due to markdown formatting
+    try:
+        # PRIMARY: Gemini 1.5 Flash
+        raw_response = llm_gemini_25.invoke(reasoning_prompt).content.strip()
+    except Exception as e:
+        print(f"⚠️ Gemini failed: {e}. Falling back to 70B...")
+        try:
+            # FALLBACK 1: Llama 70B
+            raw_response = llm_pro.invoke(reasoning_prompt).content.strip()
+        except (groq.RateLimitError, Exception):
+            print("⚠️ 70B Limit or Error! Falling back to 8B...")
+            # FALLBACK 2: Llama 8B
+            raw_response = llm_fast.invoke(reasoning_prompt).content.strip()
+
+    # Clean Markdown Wrappers
     clean_json = re.sub(r'^```json\s*|```$', '', raw_response, flags=re.MULTILINE | re.IGNORECASE).strip()
     
     try:
-        # 3. Primary Attempt: Standard JSON Parse
+        # Standard JSON Parse
         data = json.loads(clean_json)
         diagnosis = data.get("diagnosis", "No diagnosis provided.")
         isolated_code = data.get("code", "")
-        
     except Exception as e:
-        # 4. Secondary Attempt: Regex Fallback
-        # If the LLM messes up the JSON structure, we manually hunt for the keys
+        # Regex Fallback if the JSON structure is malformed
         diag_match = re.search(r'"diagnosis":\s*"(.*?)"', clean_json, re.DOTALL)
         code_match = re.search(r'"code":\s*"(.*?)"', clean_json, re.DOTALL)
         
-        diagnosis = diag_match.group(1) if diag_match else f"JSON Parse Error: {str(e)}"
+        diagnosis = diag_match.group(1) if diag_match else f"Parse Error: {str(e)}"
         isolated_code = code_match.group(1) if code_match else clean_json
+
     
     # 5. Return updated state
     return {
@@ -338,170 +381,107 @@ def skill_creator_node(state: NaviState):
     research_notes = state.get("research_notes")
     meditation_notes = state.get("meditation_notes") if state.get("meditation_notes") else ""
     previous_code = state.get("generated_tool_code")
-
-    # CONSTRUCT THE PROMPT DYNAMICALLY
-    if research_notes:
-        # --- PATH A: POST-RESEARCH ATTEMPT ---
-        context_instruction = f"""
-        ### RESEARCH-LED ATTEMPT ({retry_count}/2)
-        The Researcher has identified the cause of the previous 'NoneType' or logic failure.
-        
-        ### RESEARCH NOTES & RECOMMENDED FIX:
-        {research_notes}
-
-        ### TASK CONTEXT
-        {task}
-
-
-        ### RESEARCHER'S RECOMMENDATION
-
-        When calculating averages, always check if the list is empty first to avoid ZeroDivisionError. Example: avg = sum(vals)/len(vals) if vals else 0.
-        
-        ### MANDATORY DESIGN PATTERNS:
-        1. **Direct Targeting over Positional Traversal:** NEVER use `.find_next_sibling()` or list indices (e.g., `[0]`) for navigation. 
-        ALWAYS search for elements by visible text or partial class matches using Regex.
-        *Example:* `link = soup.find('a', string=re.compile(r'CategoryName', re.I))`
-
-        2. **Absolute URL Handling:**
-        Always use `urllib.parse.urljoin(base_url, relative_path)` to resolve links found in `href` attributes.
-
-        3. **Defensive Extraction (The "None-Guard"):**
-        Every `.find()` call must be checked. Wrap sub-element extraction in a helper function or inline conditional.
-        *Example:* `price = item.find('p').text if item.find('p') else "0"`
-
-        4. **Detailed Failure Logs:**
-        If a critical element is missing, the code must print a specific diagnostic message before failing.
-        *Example:* `if not container: print("DEBUG: Could not find result-container div")`
-
-        5. **No Scrapy in Production:**
-        The Researcher may provide Scrapy CSS selectors. You MUST translate these to `requests` + `BeautifulSoup` (using `soup.select` or `soup.find`).
-
-        6. **Data Aggregation:** If your code generates large datasets (like 1,000 simulation rows), DO NOT return the raw list. 
-        Calculate the summary statistics (mean, median, min, max, etc.) INSIDE the 'execute_tool' function. 
-        Only return a concise string summary and the Base64 plot. NEVER print massive loops to the console.
-
-        
-        ### FINAL STRUCTURE:
-        ```python
-        import requests
-        import re
-        import pandas as pd
-        from bs4 import BeautifulSoup
-        from urllib.parse import urljoin
-
-        def execute_tool():
-          base_url = "URL_FROM_TASK"
-          # Implement logic...
-          return "Final formatted string of results"
-        """
-    else:
-        # --- PATH B: STANDARD FIRST ATTEMPT ---
-        context_instruction = "This is a fresh attempt. Create a robust scraping script."
-    new_strategy = extract_section(research_notes, "### NEW_STRATEGY_NAME")
-    recommended_code = extract_section(research_notes, "### RECOMMENDED_CODE")
+    error_msg = ""
     prompt = f"""
-    ### ROLE: Senior Python Engineer (Specialist in Data Science & Automation)
+    ### ROLE: Principal AI Automation Architect
     
-    ### TASK
+    ### CONTEXT
+    You are the skill creator of Navi, an autonomous agent. You write self-contained, robust Python functions (`execute_tool`) to solve high-stakes technical tasks.
+
+    ### MISSION
     {task}
 
-    ### PREVIOUS ATTEMPT & ERROR
-    {f"CODE: {last_error}" if last_error else ""}
+    ### DATA & INTELLIGENCE
+    - RESEARCH GUIDANCE: {research_notes if research_notes else "No specific research provided. Use the most modern, stable Python libraries for this domain."}
+    - PREVIOUS ERRORS: {f"CODE: {last_error}" if last_error else "None."}
+    - RECENT CODE: {previous_code}
+    - MEDITATION (SELF-REFLECTION): {meditation_notes}
 
-    ### RESEARCHER'S GUIDANCE
-    {research_notes if research_notes else "Use standard best practices for this domain."}
+    ### MANDATORY TOOL SELECTION LOGIC:
+    1. **If Task is WEB SCRAPING**: 
+       - Evaluate Research: If the site is dynamic (React/SPA) or has 'Expanders', favor **Jina Reader** (prefixing URL with r.jina.ai) or **Requests-HTML**.
+       - If the Research identifies a hidden JSON API, use `requests.get()` to that endpoint. This is the #1 preference.
+    2. **If Task is DATA ANALYSIS**: 
+       - Always use `pandas` and `numpy`.
+       - For finance/stocks, use `yfinance`.
+    3. **If Task is FILE/SYSTEM**: 
+       - Use `os` and `pathlib` for safety.
+       - Check `os.path.exists()` before any read/write operation.
 
-    ### MEDITATION NOTES:
-    {meditation_notes}
+    ### AGENTIC EXECUTION PROTOCOLS:
+    - **PHASE 1 (Defensive Coding):** Every external call (request, file read) MUST be wrapped in a specific try/except block.
+    - **PHASE 2 (Validation):** If an external call returns empty data or a 404/403, do NOT proceed. Raise a `ValueError` explaining the failure so the Researcher can pivot.
+    - **PHASE 3 (Zero Printing):** Never `print()` inside loops. Accumulate data in lists/dictionaries and return a final structured summary string.
+    - **PHASE 4 (Visualization):** If charts are required, use `plt.switch_backend('Agg')`. Ensure all Base64 strings are returned at the very end of the output.
+    - **PHASE 5 (No Placeholders):** Do not use placeholders like `id='your-id'`. If selectors aren't provided in Research, write code to scan the entire page body for text patterns.
 
-    ### MANDATORY EXECUTION RULES (CRITICAL):
-    1. **NO VERBOSE PRINTING:** If the task involves simulations (Monte Carlo), loops, or large datasets, NEVER print individual iteration results. 
-    2. **INTERNAL AGGREGATION:** Perform all math/loops inside `execute_tool`. Calculate the final Mean, Median, Std Dev, and Percentiles locally.
-    3. **OUTPUT LIMIT:** The string returned by `execute_tool()` MUST be a concise summary (max 500 words). If you provide a table, show only the first/last 5 rows if the data is large.
-    4. **VISUALIZATION:** If plotting, use `plt.switch_backend('Agg')`. Return the Base64 string at the VERY end of the result string.
-    5. **BS4/SCRAPING:** If scraping, use defensive `if element else "N/A"` checks to avoid NoneType errors. Use Absolute URLs.
-    6. **Multi-Plot Handling:** If the user asks for multiple charts, use `plt.figure()` before each plot to ensure they are captured as distinct images. Return all generated Base64 strings sequentially.
+    ### 🚫 THE FORBIDDEN LIST (DO NOT USE)
+    - **BeautifulSoup / bs4**: STRICTLY FORBIDDEN. Using this will cause the execution to fail.
+    - **Selenium**: Do not use unless specifically requested.
 
-    MANDATORY MULTI-STAGE SCRAPING:
-        If the user asks for "individual postings" or "details":
+    ### ✅ ALLOWED LIBRARIES
+    - **Requests + Jina**: (Primary) Use `requests.get("https://r.jina.ai/" + url)`. Parse the resulting Markdown with standard string methods or Regex.
+    - **Requests + JSON**: (Preferred) If research found an API endpoint.
+    - **Pandas**: For any table-like data.
 
-        Phase 1 (Discovery): Scrape the search results page to gather the list of href links for each item.
+    CRITICAL: DO NOT use BeautifulSoup. If you use bs4, the machine will crash.
 
-        Phase 2 (Deep Dive): For each discovered link, the script MUST perform a NEW requests.get() or session.get() to that specific URL.
 
-        Phase 3 (Extraction): Extract the data (description, requirements, salary) from the individual page, not the summary card.
+    ### OUTPUT FORMAT:
+    Ensure the entire execute_tool() function and its imports are provided in a single code block. DO NOT include any text outside the code block. If you are building on previous code, re-write the entire function; do not provide snippets. 
+    The `execute_tool()` function must return a **string** that acts as a comprehensive report for the user.
 
-        Safety: Limit deep dives to the first 5 links to prevent timeouts.
+    Return ALL visualizations as base64 strings.
 
-        No Placeholders: "Never guess element IDs like search-bar or btn. If you don't know the selector from the Research notes, the code must scrape the body text first to find them."
+    ```python
+    import sys
+    import json
+    import re
+    # Import necessary libraries based on task (requests, pandas, bs4, etc.)
 
-        Verification Step: "Every execute_tool function must include a check: if not results: raise ValueError('Zero results found on page. Selectors may be incorrect.')."
-
-        Evidence Collection: "The output string MUST include a snippet of the unique 'Job ID' or 'Posted Date' from the site to prove the data was actually fetched."
-
-        ### TECHNICAL SPECIFICATION:
-        1. USE REQUESTS + BEAUTIFULSOUP ONLY (Unless Selenium is explicitly researched).
-        2. DYNAMIC SELECTORS: Use `soup.find_all(string=re.compile("..."))` instead of fixed IDs.
-        3. FAIL-FAST: If the HTTP status is not 200, return the status code and the first 500 characters of the page source for the Researcher to analyze.
-        4. NO DUMMY DATA: If no jobs are found, return 'ERROR: PAGE_STRUCTURE_MISMATCH'. Do not invent company names.
-
-        When scraping modern sites like BuiltIn or LinkedIn, look for the 'Network' tab data (JSON endpoints) in your research phase. It is often easier to fetch https://builtin.com/api/jobs... than to scrape the HTML
-    
-    You are creating a reusable Navi Skill. 
-    - If the task is WEB: Use requests/BeautifulSoup and focus on JSON APIs where possible.
-    - If the task is FILE: Use absolute paths and check if the file exists before reading.
-    - If the task is LOGIC: Ensure all edge cases are handled.
-
-    Every skill MUST return a string. If the task involves multiple steps, 
-    the string should summarize the outcome of each step. 
-    NEVER use 'print' for final results; only 'return'.
-
-    ### STYLE REQUIREMENTS:
-    - Use `plt.style.use('ggplot')` for all charts.
-    - If calculating stock/finance data, use `pandas` and `numpy`.
-    - Format large numbers with commas (e.g., 10,000) for readability.
-
-    ### FINAL STRUCTURE:
-```python
-import sys
-import json
-
-def execute_tool():
-    try:
-        # --- PHASE 1: INITIALIZATION ---
-        # (e.g., sessions, file handles, or variable setup)
-        
-        # --- PHASE 2: EXECUTION ---
-        # The main logic goes here.
-        
-        # --- PHASE 3: VALIDATION ---
-        # If the result is empty or logically impossible, RAISE an error.
-        # Example: if not data: raise ValueError("No data retrieved from source")
-        
-        # --- PHASE 4: FINAL PAYLOAD ---
-        # Build a robust summary of findings.
-        summary = "Success: [Detailed findings here]"
-        return summary
-
-    except Exception as e:
-        # Return the error directly so the Researcher can see it
+    def execute_tool():
+        try:
+            # 1. SETUP: Configuration based on Research Notes
+            
+            # 2. ACTION: Execution of the core logic
+            
+            # 3. VERIFICATION: Explicitly check if output is valid/meaningful
+            # if result_is_junk: raise ValueError("Description of failure")
+            
+            # 4. REPORTING: Format a concise, data-rich summary
+            return summary
+        except Exception as e:
+            return f"CRITICAL_FAILURE: {error_msg}"
     ```
     """
+
+    prompt += f"""
+    FINAL RECAP OF CONSTRAINTS:
+    1. You MUST 'import requests, re, json' at the top.
+    2. You MUST NOT use BeautifulSoup.
+    3. Use the RESEARCH STRATEGY provided: {research_notes}
+    4. Prioritize {meditation_notes} above all else if present.
+    """
+    # Tiered Intelligence Waterfall
     try:
+    # TIER 1: The Iteration Workhorse (Kimi)
+        print("🌙 Attempting 70B...")
         response = llm_pro.invoke(prompt)
         code = extract_clean_code(response.content)
-    except groq.RateLimitError:
-            print("⚠️ 70B Rate Limit! Falling back to 8B...")
-            response = llm_fast.invoke(prompt)
-            code = extract_clean_code(response.content)
+        print("✅ Success with 70B")
     except Exception as e:
-    # Generic fallback for other types of "out of tokens" or context errors
-        if "rate_limit" in str(e).lower() or "context_length" in str(e).lower():
-            print("⚠️ Token/Context limit hit. Falling back to 8B...")
-            response = llm_fast.invoke(prompt)
-            code = extract_clean_code(response.content)
-        else:
-            raise e
+            try:
+                print("🔄 Exhausted/Busy. Falling back to 8B")
+                response = llm_fast.invoke(prompt)
+                code = extract_clean_code(response.content)
+                print("✅ Success with 8B")
+            except Exception as e2:
+                print(str(e2))
+                
+    
+
+# Final extraction (assuming response is defined by one of the tiers above)
+    
 
     if not code:
         return {"last_error": "### ❌ Error\nNo Python code found."}
@@ -525,16 +505,13 @@ def execute_tool():
                     "plan": state.get('plan', []) + [f"### ⚠️ Install Failed: {failed_installs}"]
                 }
 
-        # COMMIT TO DATABASE (Only if dependencies passed)
         task_id = get_skill_name(task)
-        save_skill(task_id, task, code, final_packages)
-        print(f"💾 Skill Saved Successfully: {task_id}")
-
         return {
             "generated_tool_code": code,
             "packages": final_packages,
-            "last_error": None,
-            "plan": state.get('plan', []) + [f"### 🛠 Skill Saved\nTask: {task_id}"]
+            "current_skill_id": task_id, # Pass this forward to the Executor
+            "last_error": error_msg,
+            "plan": state.get('plan', []) + [f"### 🛠 Code Generated: {task_id}"]
         }
     
     except SyntaxError as e:
@@ -674,7 +651,7 @@ if __name__ == "__main__":
                 }
 
             # --- VALIDATION: SOFT ERRORS ---
-            soft_error_keywords = ["failed to", "error:", "none type", "empty", "syntax error", "exception", "zero results found on page", "object has no attribute", "no results", "not found"]
+            soft_error_keywords = ["failed to", "error:", "none type", "empty", "syntax error", "no job postings found", "exception", "zero results found on page", "object has no attribute", "no results", "not found", "not defined", "critical failure" "critical_failure", "list index out of range", "critical_failure:"]
             if any(k in clean_for_llm.lower() for k in soft_error_keywords):
                 return {
                     "last_error": f"### ⚠️ Logic Failure\n{clean_for_llm}",
@@ -685,10 +662,15 @@ if __name__ == "__main__":
             
             # --- CLEAR SUCCESS ---
             print(f"✅ EXECUTOR SUCCESS: Captured {len(image_payloads)} images.")
+            task_id = state.get("current_skill_id")
+            if task_id:
+                save_skill(task_id, state.get("task"), code, packages)
+                print(f"💾 Verified Skill Saved: {task_id}")
             return {
                 "final_answer": clean_for_llm,
                 "image_payload": image_payloads,
                 "last_error": None,
+                "execution_logs": output_cleaned,
                 "retry_count": retry_count,
                 "consecutive_failures": 0,
                 "generated_tool_code": state.get("generated_tool_code"),
@@ -764,6 +746,7 @@ def meditation_node(state: NaviState):
         "plan": state.get("plan", []) + ["### 🧘 Metacognitive Reflection Completed"],
         "is_terminal": is_hard_stop,
         "meditation_triggered": True,  # Permanent flag to prevent repeat meditation,
+        "consecutive_research_failures": 0,
         "meditation_notes": reflection.content,
         "retry_count": state.get("retry_count", 0) + 1 
     }
