@@ -61,7 +61,7 @@ def render_sidebar():
         
         # --- EXAMPLE PROMPTS SECTION ---
         st.subheader("💡 Example Prompts")
-        st.info("Click the prompt to copy it, then paste it into the chat.")
+        st.info("Click the prompts to copy it, then paste them into the chat.")
         
         example_prompts = [
             """We are researching a market entry into Japan for a luxury skincare line.
@@ -78,7 +78,14 @@ def render_sidebar():
 
             X-Axis: Local Sale Price in JPY (¥20,000 to ¥30,000)
 
-            Cultural Synthesis: Based on your research, suggest 3 'J-Beauty' trends we should incorporate into our marketing to appeal to Ginza shoppers."""
+            Cultural Synthesis: Based on your research, suggest 3 'J-Beauty' trends we should incorporate into our marketing to appeal to Ginza shoppers.""", """Run a 12-month Monte Carlo simulation (1,000 trials) for a B2B SaaS startup.
+            Parameters: > 1. Initial Burn: $150k starting capital.
+            2. Revenue: $100 Monthly ARPU (Average Revenue Per User).
+            3. Acquisition: Normal distribution (Mean=40, StdDev=10) new customers/mo.
+            4. Retention: Model a 5% monthly churn rate (compounding).
+            5. Costs: Fixed $8k/mo + variable $5/user/mo for infrastructure.
+
+            Task: Visualize the Cash Runway over 12 months. Plot the 5th, 50th, and 95th percentiles of net cash flow. Based on the 'Worst Case' (5th percentile), tell me exactly which month we run out of money and recommend an ARPU or Churn adjustment to survive 18 months."""
         ]
         
         for ex in example_prompts:
@@ -100,7 +107,7 @@ if "messages" not in st.session_state:
 # --- 2. UI LAYOUT ---
 st.title("Navi: Self-Learning Multi-Purpose Agent")
 st.markdown("""
-Navi is an advanced AI agent that thinks, researches, and executes code in real-time.  Use the sidebar to copy the test prompt, or create your own prompt.
+Navi is an advanced AI agent that thinks, researches, and executes code in real-time.  Use the sidebar to copy one of the test prompts, or create your own prompt.
 """)
 
 st.markdown("---")
