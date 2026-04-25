@@ -11,8 +11,19 @@ import base64
 from PIL import Image
 import io
 import subprocess
+import sys
 
-# --- 1. CONFIGURATION & ENVIRONMENT 
+# --- 1. CONFIGURATION & ENVIRONMENT ---
+# MUST BE SET BEFORE ANY CORE IMPORTS CALL PLAYWRIGHT
+root_path = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(root_path)
+
+# Force Playwright to use a local folder within the Streamlit mount
+# This ensures persistence and visibility across sub-processes
+local_bins = os.path.join(root_path, ".playwright_bins")
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = local_bins
+os.makedirs(local_bins, exist_ok=True)
+
 load_dotenv()
 init_db()
 
@@ -33,6 +44,7 @@ def display_navi_chart(b64_string):
 def inspect_skills():
     conn = sqlite3.connect("tools/navi_skills.db")
     cursor = conn.cursor()
+    cursor.execute("CREATE TABLE IF NOT EXISTS skills (id INTEGER PRIMARY KEY, keyword TEXT, created_at TEXT)") # Safety check
     cursor.execute("SELECT id, keyword, created_at FROM skills")
     rows = cursor.fetchall()
     conn.close()

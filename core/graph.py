@@ -13,6 +13,7 @@ from importlib import metadata
 import sqlite3
 import ast
 from core.database import get_skill, save_skill, init_db
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 def install_package(package):
     try:
