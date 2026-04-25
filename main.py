@@ -13,7 +13,7 @@ import io
 import subprocess
 import sys
 from playwright.sync_api import sync_playwright
-
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.path.join(os.getcwd(), ".playwright_bins")
 def test_playwright():
     try:
         # Match the path we set in main.py
@@ -58,7 +58,7 @@ if st.sidebar.button("🔨 FIX PLAYWRIGHT (Run this once)"):
             st.error("❌ Installation Failed")
             st.code(process.stderr)
 
-            
+
 # --- 1. CONFIGURATION & ENVIRONMENT ---
 # Get the absolute path of the directory containing main.py
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
