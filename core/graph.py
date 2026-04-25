@@ -367,8 +367,8 @@ def planner_node(state: NaviState):
         - Do not mention or explain the Base64/Image strings.
         - Never provide individual data points used for graphs.
         - Never provide code blocks.
-        - Do not include tags (like <br>) in your response, just regular text ONLY.
-        - Use tables or bullets for clarity.
+        - Do not include tags (like <br>) in your response, just regular text.
+        - Use tables or bullets for clarity, favor tables over bullets unless the user explicitly asks for a list or a list would be helpful.
         """
     
         summary_response = llm_fast.invoke(format_prompt).content.strip()
