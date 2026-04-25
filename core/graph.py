@@ -653,6 +653,8 @@ def skill_creator_node(state: NaviState):
       - RIGHT: `m = re.search(p, t); val = m.group(1) if m else None`
     - **NONE-TYPE PROTECTION**: Always verify objects are not None before accessing attributes (e.g., `.get()`, `.text`).
 
+    IMPORTANT: Playwright and Chromium are already installed and configured at /mount/src/enterprise-bi-agent/.playwright_bins. Do NOT attempt to install dependencies or browsers. Use sync_playwright() with headless=True and args=['--no-sandbox'] to scrape.
+
     ### OUTPUT FORMAT:
     Provide only the `execute_tool()` function in a code block. Do not include conversational filler.
     """

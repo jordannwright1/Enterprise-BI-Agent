@@ -12,6 +12,24 @@ from PIL import Image
 import io
 import subprocess
 import sys
+from playwright.sync_api import sync_playwright
+
+def test_playwright():
+    try:
+        # Match the path we set in main.py
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.path.join(os.getcwd(), ".playwright_bins")
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+            page = browser.new_page()
+            page.goto("https://google.com")
+            title = page.title()
+            browser.close()
+            return f"✅ Success! Page title: {title}"
+    except Exception as e:
+        return f"❌ Playwright Test Failed: {e}"
+
+if st.button("Run Playwright Sanity Check"):
+    st.write(test_playwright())
 
 # --- 1. CONFIGURATION & ENVIRONMENT ---
 # Get the absolute path of the directory containing main.py
