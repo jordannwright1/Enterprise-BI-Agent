@@ -85,7 +85,13 @@ def render_sidebar():
             4. Retention: Model a 5% monthly churn rate (compounding).
             5. Costs: Fixed $8k/mo + variable $5/user/mo for infrastructure.
 
-            Task: Visualize the Cash Runway over 12 months. Plot the 5th, 50th, and 95th percentiles of net cash flow. Based on the 'Worst Case' (5th percentile), tell me exactly which month we run out of money and recommend an ARPU or Churn adjustment to survive 18 months."""
+            Task: Visualize the Cash Runway over 12 months. Plot the 5th, 50th, and 95th percentiles of net cash flow. Based on the 'Worst Case' (5th percentile), tell me exactly which month we run out of money and recommend an ARPU or Churn adjustment to survive 18 months.""", """Generate a Cross-Platform Tech Intelligence Report.
+
+            Strategic Moves (TechCrunch): Go to https://techcrunch.com/ and scrape the first 3 articles. Extract the Author and a summary of the Strategic Impact from the full article pages.
+
+            Product & Culture (The Verge): Go to https://www.theverge.com/ and scrape the first 2 featured stories. Extract the Main Takeaway and the Primary Subject from the full article pages.
+
+            Synthesis Requirement: Create a single 'Executive Briefing' that contrasts the Business/Financial focus of TechCrunch with the Consumer/Product focus of The Verge. Provide a 'Recruiter's Perspective' on which tech sectors (e.g., AI, Fintech, Hardware) are showing the most momentum today based on these 5 sources."""
         ]
         
         for ex in example_prompts:

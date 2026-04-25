@@ -36,139 +36,161 @@ def get_skill_name(task_description: str) -> str:
 from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
 import re
-import time
-from urllib.parse import urljoin
-from collections import Counter
+from urllib.parse import urljoin, urlparse
 
-def universal_scraper(url, task_query="", max_depth=1):
-    result = {
-        "mode": "structured_blocks",
-        "status": "initializing",
-        "data": [],
-        "observations": {}
-    }
+def universal_scraper(url, task_query, max_depth=1):
+    result = {"mode": "structured_blocks", "status": "initializing", "data": ""}
+    
+    # --- 1. THE "END THE ANNOYANCE" TARGET LOGIC ---
+    target_count = None
+    try:
+        domain = urlparse(url).netloc.split('.')[-2].lower() if '.' in url else url.lower()
+        
+        # Look for the domain and then find the first number that appears after it 
+        # but before the next domain or major milestone.
+        pattern = rf"{re.escape(domain)}.*?(\d+)"
+        match = re.search(pattern, task_query.lower(), re.DOTALL)
+        
+        if match:
+            extracted = int(match.group(1))
+            # If the number is a milestone marker (1, 2, 3), double check context
+            if extracted <= 3:
+                # Look at the 30 characters around it for quantity keywords
+                context = task_query.lower()[max(0, match.start()-10) : match.end()+30]
+                if any(w in context for w in ['article', 'story', 'item', 'result', 'top', 'first']):
+                    target_count = extracted
+            else:
+                target_count = extracted
+
+    except Exception as e:
+        print(f"[DEBUG] Extraction error: {e}")
+
+    # Final Fallback: Hard default to 3 only if we are truly lost
+    if not target_count:
+        # Avoid picking up milestone '1' as a count
+        potential_nums = [int(n) for n in re.findall(r'\d+', task_query) if int(n) > 1]
+        target_count = potential_nums[0] if potential_nums else 3
+    
+    print(f"[DEBUG] URL: {url} | Domain: {domain} | Final Target Count: {target_count}")
+
+    # 2. KEYWORD REFINEMENT
+    raw_keywords = re.findall(r'\w+', task_query.lower())
+    stop_words = {'go', 'to', 'and', 'find', 'the', 'for', 'each', 'its', 'page', 'extract', 'com', 'http', 'https', 'milestone'}
+    keywords = [k for k in raw_keywords if k not in stop_words and len(k) > 2]
+    
+    def is_valid_url(u):
+        try:
+            res = urlparse(u)
+            return all([res.scheme, res.netloc])
+        except: return False
 
     try:
-        if not url or not isinstance(url, str):
-            result["mode"] = "error"
-            result["data"] = "Invalid URL"
-            return result
-        
         target_url = url.strip()
-        if not target_url.startswith(('http', 'https')):
-            target_url = 'https://' + target_url
+        if not target_url.startswith('http'): target_url = 'https://' + target_url
 
-        visited = set()
-        to_visit = [(target_url, 0)]
-        seen_titles = set()
+        visited, to_visit, raw_storage, seen_titles = set(), [(target_url, 0)], [], set()
 
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
-            page = browser.new_page(user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+            page = browser.new_page(user_agent='Mozilla/5.0')
 
-            while to_visit:
-                curr, depth = to_visit.pop(0)
-                if curr in visited or depth > max_depth: continue
+            while to_visit and len(raw_storage) < target_count:
+                entry = to_visit.pop(0)
+                curr, depth = entry[0], entry[1]
+
+                if not is_valid_url(curr) or curr in visited or depth > max_depth: 
+                    continue
+                
                 visited.add(curr)
+                print(f"[DEPTH {depth}] Navigating: {curr}")
 
                 try:
-                    page.goto(curr, wait_until='domcontentloaded', timeout=20000)
-                    time.sleep(2)
-                    
+                    page.goto(curr, wait_until='domcontentloaded', timeout=15000)
+                    page.wait_for_timeout(2000) 
                     soup = BeautifulSoup(page.content(), 'html.parser')
-                    # Pre-cleaning remains the same
-                    for noise in soup(["script", "style", "form", "svg", "noscript", "nav", "footer"]):
-                        noise.decompose()
-
-                    # 1. ENHANCED Structural Pattern Detection
-                    all_elements = soup.find_all(True)
-                    pattern_candidates = []
                     
-                    for el in all_elements:
-                        if el.name in ['div', 'tr', 'li', 'article', 'section']:
-                            tag_class = f"{el.name}.{'.'.join(el.get('class', []))}"
-                            link = el.find('a')
-                            if link:
-                                # HEURISTIC: Content rows usually have more text and metadata (digits)
-                                # than navigation menus.
-                                text_len = len(el.get_text(strip=True))
-                                link_len = len(link.get_text(strip=True))
-                                has_digits = 1 if re.search(r'\d+', el.get_text()) else 0
+                    if depth == 0:
+                        # --- HUB PAGE LOGIC ---
+                        found_on_hub = 0
+                        for link in soup.find_all('a', href=True):
+                            # Don't queue more than we need
+                            if found_on_hub >= target_count: break
                                 
-                                # We store the pattern and its 'content weight'
-                                pattern_candidates.append({
-                                    "pattern": tag_class,
-                                    "weight": text_len + (has_digits * 20),
-                                    "link_len": link_len
-                                })
-
-                    # Filter: Find the best pattern by average weight, not just count
-                    avg_weights = {}
-                    counts = Counter([c["pattern"] for c in pattern_candidates])
-                    
-                    for cand in pattern_candidates:
-                        p = cand["pattern"]
-                        avg_weights[p] = avg_weights.get(p, 0) + cand["weight"]
-                    
-                    # Sort patterns by (total_weight / count) * count, but penalize short links (menus)
-                    best_pattern = None
-                    sorted_patterns = sorted(counts.items(), key=lambda x: (avg_weights[x[0]] / x[1]) * x[1], reverse=True)
-                    
-                    for p_name, count in sorted_patterns:
-                        # Skip patterns where the links are typically very short (like 'new', 'past')
-                        sample_link_len = next(c["link_len"] for c in pattern_candidates if c["pattern"] == p_name)
-                        if count >= 3 and sample_link_len > 10: 
-                            best_pattern = p_name
-                            break
-
-                    if best_pattern:
-                        tag, *classes = best_pattern.split('.')
-                        containers = soup.find_all(tag, class_=classes)
-                    else:
-                        containers = soup.find_all(['tr', 'li', 'article'])
-
-                    # 2. Adaptive Extraction (Preserved Logic)
-                    for i, item in enumerate(containers):
-                        links = item.find_all('a', href=True)
-                        # Pick the title link: longest text within the item
-                        title_link = max(links, key=lambda a: len(a.get_text(strip=True)), default=None)
-                        title = title_link.get_text(strip=True) if title_link else ""
-
-                        # TWEAK: Increase character threshold slightly to ignore small menu items
-                        if len(title) > 12 and title not in seen_titles:
-                            full_context = item.get_text(" ", strip=True)
-                            if i + 1 < len(containers):
-                                full_context += " " + containers[i+1].get_text(" ", strip=True)
-
-                            score_m = re.search(r'(\d+)\s*(pts|points|score|upvotes)', full_context, re.I)
-                            author_m = re.search(r'(?:by|user|author)\s+([a-zA-Z0-9_-]+)', full_context, re.I)
+                            full_url = urljoin(curr, link['href'])
+                            if any(x in full_url.lower() for x in ['category/', 'tag/', 'cart', 'login']):
+                                continue
+                                
+                            title = (link.get('title') or link.get_text() or "").strip()
+                            if not title or len(title) < 5 or title.lower() in ["techcrunch", "hacker news"]:
+                                continue
                             
-                            result["data"].append({
-                                "Title": title,
-                                "Score": score_m.group(1) if score_m else "0",
-                                "Author": author_m.group(1) if author_m else "unknown",
-                                "Link": urljoin(curr, title_link['href']) if title_link else ""
-                            })
-                            seen_titles.add(title)
+                            score = 0
+                            # Verge-specific class and general header check
+                            parent_check = link.find_parent(['article', 'h1', 'h2', 'h3', 'h4', 'tr'])
+                            is_headline_class = any("adventure" in str(cls).lower() for cls in link.get('class', []))
+                            
+                            if parent_check or is_headline_class or len(title) > 40: 
+                                score += 30
+                            if any(k in title.lower() for k in keywords): 
+                                score += 20
+                            
+                            if is_valid_url(full_url) and title not in seen_titles and score >= 30:
+                                to_visit.append((full_url, depth + 1))
+                                seen_titles.add(title)
+                                found_on_hub += 1
 
-                        if len(result["data"]) >= 20: break 
+                    else:
+                        # --- DETAIL PAGE LOGIC ---
+                        item_data = {}
+                        author_tag = soup.find(['a', 'div', 'span'], class_=re.compile(r'author|byline|user|hnuser', re.I))
+                        if author_tag:
+                            item_data['Source/Author'] = author_tag.get_text(strip=True)
 
-                except: continue
+                        if "news.ycombinator.com" in url:
+                            comment = soup.find('span', class_='commtext')
+                            if comment: item_data['Top Comment'] = comment.get_text(strip=True)[:400]
+                        
+                        desc_tags = soup.find_all(['p', 'div'], string=re.compile(r'description|summary|content', re.I))
+                        if desc_tags:
+                            content = desc_tags[0].find_next(['p', 'div'])
+                            if content: item_data['Detail'] = content.get_text(strip=True)[:400]
+                        else:
+                            p_tags = soup.find_all('p')
+                            if p_tags:
+                                longest_p = max(p_tags, key=lambda p: len(p.get_text()))
+                                if len(longest_p.get_text()) > 50:
+                                    item_data['Summary'] = longest_p.get_text(strip=True)[:400]
+
+                        h1 = soup.find('h1') or soup.find('title')
+                        if item_data:
+                            name = h1.get_text(strip=True) if h1 else "Item"
+                            print(f"  [SUCCESS] Extracted: {name}")
+                            raw_storage.append({"title": name, "details": item_data})
+                            
+                            if len(raw_storage) >= target_count:
+                                break
+
+                except Exception as e:
+                    print(f"  [SKIP] {curr}: {str(e)[:40]}")
+                    continue
             
             browser.close()
 
-        if not result["data"]:
-            result["mode"] = "narrative_blocks"
-            result["data"] = ["No content patterns found. The site may be using non-standard data layouts."]
+        if not raw_storage:
+            result["data"] = "No matching items found."
         else:
+            table = [f"### Results for {urlparse(url).netloc}\n| Title | Extracted Details |", "| :--- | :--- |"]
+            # Strict slice to ensure we never return more than requested
+            for entry in raw_storage[:target_count]:
+                details = " <br> ".join([f"**{k}**: {v}" for k, v in entry['details'].items()])
+                table.append(f"| {entry['title']} | {details} |")
+            result["data"] = "\n".join(table)
             result["status"] = "success"
-            result["mode"] = "structured_blocks" 
 
         return result
-
     except Exception as e:
-        return {"mode": "error", "status": "failed", "data": str(e)}        
-
+        return {"mode": "error", "data": str(e)}
+        
 
 def extract_clean_code(content: str) -> str:
     # 1. Primary Extraction
@@ -510,140 +532,98 @@ def skill_creator_node(state: NaviState):
     research_notes = state.get("research_notes", "")
     meditation_notes = state.get("meditation_notes", "")
     previous_code = state.get("generated_tool_code", "")
-    executor_logs = state.get("executor_logs", "") # New: pass the actual crash logs
+    aggregated_research = state.get("aggregated_research", "")
+    executor_logs = state.get("executor_logs", "") 
     error_msg = ""
     history = state.get("history", [])
     
     # Get the last message's content
     if not history:
-        user_input = state.get("task", "") # Fallback to task key
+        user_input = state.get("task", "") 
     else:
         user_input = history[-1].content
 
-    # 2. Hardcoded Trigger Check
-    is_scraping_task = any(word in user_input.lower() for word in ["http", "www.", "scrape", "extract", "visit"])
+    # 1. Scraper Execution
+    is_scraping_task = any(word in user_input.lower() for word in ["http", "scrape", "extract", "visit"])
+    # 1. Identify ALL URLs in the prompt
+    # This regex finds all unique links in the input
+    urls = list(dict.fromkeys(re.findall(r'https?://[^\s/$.?#].[^\s]*', user_input)))
     
-    # Initialize the base instructions
-    scraping_context = "Task: Write a Python function `execute_skill()` to solve the user's request."
-
-    if is_scraping_task:
-        # Extract URL from the prompt using Regex
-        url_match = re.search(r'https?://[^\s]+', user_input)
-        if url_match:
-            target_url = url_match.group(0)
+    if is_scraping_task and urls:
+        new_research_blocks = []
+        
+        # 2. Iterate through every URL found
+        for target_url in urls:
+            print(f"🌐 [BATCH] Starting scrape for: {target_url}")
             
-            # --- CALL THE HARDCODED PLAYWRIGHT SCRAPER ---
-            # This runs BEFORE the LLM logic
-            raw_data = universal_scraper(target_url, task_query=user_input) 
+            # Run the scraper for the specific URL
+            # Note: task_query=user_input allows the scraper to see the context for numbers
+            raw_data = universal_scraper(target_url, task_query=user_input)
             
-            if raw_data["mode"] == "structured_blocks":
-                scraping_context = f"""
-                CRITICAL: I have successfully retrieved data from {target_url} using Playwright.
-                The page is pre-processed into 'Semantic Blocks'.
-                
-                DATA BLOCKS:
-                {raw_data['data']}
-                
-                TASK: Write `execute_skill()` to:
-                1. Iterate through these blocks.
-                2. Use Regex or String splitting to extract the data (Titles, Scores, etc.).
-                3. Return the final structured output.
-                """
+            if raw_data.get("status") == "success":
+                # Wrap the data in a header for the LLM
+                block = f"\n\n### DATA FROM {target_url}\n" + raw_data['data']
+                new_research_blocks.append(block)
             else:
-                # Handle blocked sessions or crashes
-                scraping_context = f"The scraper returned an error: {raw_data['data']}. Explain the block to the user."
+                print(f"⚠️ [BATCH] Failed to scrape {target_url}")
+
+        # 3. Update the state with EVERYTHING we found
+        if new_research_blocks:
+            final_data = aggregated_research + "".join(new_research_blocks)
+            
+            # Create the final tool code with the full combined dataset
+            generated_code = f'def execute_tool():\n    return """{final_data}"""'
+            
+            # We use the first URL to generate the skill ID (or a combined one)
+            task_id = get_skill_name(f"multi_scrape_{len(urls)}")
+            
+            return {
+                "generated_tool_code": generated_code,
+                "aggregated_research": final_data,
+                "current_skill_id": task_id,
+                "last_error": None,
+                "plan": plan + [f"### ✅ Scraped {len(new_research_blocks)} sources successfully."]
+            }
+            
+        # --- PATH B: THE DIAGNOSTIC FAILURE ---
         else:
-            scraping_context = "The user wants to scrape but didn't provide a URL. Ask for one."
+                print(f"⚠️ [DIAGNOSIS] Scraper failed. Passing logs to Architect for repair...")
+                # Inject the failure logs into research notes so the LLM knows why it's fixing it
+                failure_msg = raw_data.get('data', 'Unknown scraper error')
+                research_notes += f"\n\n[INTERNAL SCRAPER FAILURE LOGS]:\n{failure_msg}"
 
 
+    # 2. Final Prompt Construction
     prompt = f"""
-    ### ROLE: Principal AI Automation Architect
+    ### ROLE: Principal AI Automation Architect (Navi System)
     
-    ### CONTEXT
-    You are the skill creator of Navi, an autonomous agent. You write self-contained, robust Python functions (`execute_tool`) to solve high-stakes technical tasks.
-
     ### MISSION
     {task}
-    {scraping_context}
 
     ### DATA & INTELLIGENCE
-    - RESEARCH GUIDANCE: {research_notes if research_notes else "No specific research provided. Use the most modern, stable Python libraries for this domain."}
+    - RESEARCH GUIDANCE: {research_notes if research_notes else "None."}
     - PREVIOUS ERRORS: {f"CODE: {last_error}" if last_error else "None."}
-    - EXECUTION LOGS: {executor_logs if executor_logs else "No logs available."}
+    - EXECUTION LOGS: {executor_logs if executor_logs else "No logs."}
     - RECENT CODE: {previous_code}
-    - MEDITATION (SELF-REFLECTION): {meditation_notes}
+    - MEDITATION: {meditation_notes}
 
     ### MANDATORY TOOL SELECTION LOGIC:
-    1. **If Task is WEB SCRAPING**: 
-       - Evaluate Research: If the site is dynamic (React/SPA) or has 'Expanders', favor **Jina Reader** (prefixing URL with r.jina.ai) or **Requests-HTML**.
-       - If the Research identifies a hidden JSON API, use `requests.get()` to that endpoint. This is the #1 preference.
-    2. **If Task is DATA ANALYSIS**: 
-       - Always use `pandas` and `numpy`.
-       - For finance/stocks, use `yfinance`.
-    3. **If Task is FILE/SYSTEM**: 
-       - Use `os` and `pathlib` for safety.
-       - Check `os.path.exists()` before any read/write operation.
-
-    ### AGENTIC EXECUTION PROTOCOLS:
-    - **PHASE 1 (Defensive Coding):** Every external call (request, file read) MUST be wrapped in a specific try/except block.
-    - **PHASE 2 (Validation):** If an external call returns empty data or a 404/403, do NOT proceed. Raise a `ValueError` explaining the failure so the Researcher can pivot.
-    - **PHASE 3 (Zero Printing):** Never `print()` inside loops. Accumulate data in lists/dictionaries and return a final structured summary string.
-    - **PHASE 4 (Visualization):** If charts are required, use `plt.switch_backend('Agg')`. Ensure all Base64 strings are returned at the very end of the output.
-    - **PHASE 5 (No Placeholders):** Do not use placeholders like `id='your-id'`. If selectors aren't provided in Research, write code to scan the entire page body for text patterns.
+    1. **DATA ANALYSIS**: Use `pandas` and `numpy`.
+    2. **FILE/SYSTEM**: Use `os` and `pathlib` for safety.
+    3. **UTILITIES**: Use `json`, `re`, and `datetime`.
 
     ### 🚫 THE FORBIDDEN LIST (DO NOT USE)
-    - **BeautifulSoup / bs4**: STRICTLY FORBIDDEN. Using this will cause the execution to fail.
-    - **Selenium**: Do not use unless specifically requested.
+    - **BeautifulSoup / bs4**: STRICTLY FORBIDDEN.
+    - **Selenium**: Do not use.
 
-    ### ✅ ALLOWED LIBRARIES
-    - **Requests + Jina**: (Primary) Use `requests.get("https://r.jina.ai/" + url)`. Parse the resulting Markdown with standard string methods or Regex.
-    - **Requests + JSON**: (Preferred) If research found an API endpoint.
-    - **Pandas**: For any table-like data.
-
-    CRITICAL: DO NOT use BeautifulSoup. If you use bs4, the machine will crash.
-
-    If you encounter a '0x89' or 'utf-8 codec' error, it means you forgot to .decode('ascii') your base64 object.
-
-    ### 🚨 VISUALIZATION PROTOCOL
-    To avoid '0x89' and 'undefined' errors, you must write the following EXACT code block in your execute_tool function:
-
-    ```python
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png')
-    buf.seek(0)
-    final_chart = base64.b64encode(buf.read()).decode('ascii')
-    plt.close()
-    return f"Analysis Complete. [IMAGE_DATA_HIDDEN_0] {{final_chart}}"
-    ```
-
-    Return ALL visualizations as base64 strings in the console, don't create png files.  Don't return visuals unless the user explicitly asks for them.
+    ### 🚨 LITE-MODEL (8B) CRASH PREVENTION
+    - **REGEX SAFETY**: NEVER chain `.group()` directly to a regex call. 
+      - WRONG: `re.search(p, t).group(1)`
+      - RIGHT: `m = re.search(p, t); val = m.group(1) if m else None`
+    - **NONE-TYPE PROTECTION**: Always verify objects are not None before accessing attributes (e.g., `.get()`, `.text`).
 
     ### OUTPUT FORMAT:
-    Ensure the entire execute_tool() function and its imports are provided in a single code block. DO NOT include any text outside the code block. If you are building on previous code, re-write the entire function; do not provide snippets. 
-    The `execute_tool()` function must return a **string** that acts as a comprehensive report for the user.
-
-
-    ```python
-    import sys
-    import json
-    import re
-    # Import necessary libraries based on task (requests, pandas, etc.)
-
-    def execute_tool():
-        try:
-            # Logic here
-            return summary
-        except Exception as e:
-            return f"CRITICAL_FAILURE: {{e}}"
-    ```
-    """
-
-    # Recency Bias Reinforcement
-    prompt += f"""
-    ### FINAL RECAP OF CONSTRAINTS (MANDATORY):
-    1. You MUST include 'import requests, re, json' at the top of the script.
-    2. You MUST NOT use BeautifulSoup (bs4).
-    3. STRATEGY OVERRIDE: {meditation_notes if meditation_notes else "Follow the research guidance."}
+    Provide only the `execute_tool()` function in a code block. Do not include conversational filler.
     """
 
     # Tiered Intelligence Waterfall
@@ -659,57 +639,36 @@ def skill_creator_node(state: NaviState):
         print("✅ Success with 8B")
 
     if not code:
-        return {"last_error": "### ❌ Error\nNo Python code found in LLM response."}
+        return {"last_error": "### ❌ Error\nNo Python code found."}
 
     try:
-        # Validate syntax before attempting to run/install
         ast.parse(code)
-        
-        # --- DYNAMIC DEPENDENCY MANAGEMENT ---
         final_packages = extract_dependencies(code)
 
         if final_packages:
             failed_installs = ensure_packages(final_packages)
-            
             if failed_installs:
-                error_msg = f"### ❌ Dependency Error\nCould not install: {', '.join(failed_installs)}."
                 return {
-                    "last_error": error_msg,
-                    "plan": state.get('plan', []) + [f"### ⚠️ Install Failed: {failed_installs}"]
+                    "last_error": f"### ❌ Dependency Error\nCould not install: {failed_installs}.",
+                    "plan": plan + [f"### ⚠️ Install Failed: {failed_installs}"]
                 }
 
-        # Generate the name but DO NOT SAVE yet. Executor will save on success.
         task_id = get_skill_name(task)
-        
         return {
             "generated_tool_code": code,
             "packages": final_packages,
             "current_skill_id": task_id,
-            "last_error": last_error, # Pass the error forward so it's not wiped from state
-            "plan": state.get('plan', []) + [f"### 🛠 Code Generated: {task_id}"]
+            "last_error": last_error,
+            "plan": plan + [f"### 🛠 Code Generated: {task_id}"]
         }
-    
     except SyntaxError as e:
-        return {
-            "last_error": f"### ❌ Syntax Error in Generated Code\n{str(e)}",
-            "plan": state.get('plan', []) + ["### ❌ Syntax Error"]
-        }
+        return {"last_error": f"### ❌ Syntax Error\n{str(e)}", "plan": plan + ["### ❌ Syntax Error"]}
     except Exception as e:
-        return {
-            "last_error": f"### ❌ Skill Creator Error\n{str(e)}",
-            "plan": state.get('plan', []) + ["### ❌ Creator Node Error"]
-        }
-            
+        return {"last_error": f"### ❌ Creator Error\n{str(e)}", "plan": plan + ["### ❌ Creator Node Error"]}
+                
 
 
 # --- Node 3: Executor ---
-import subprocess
-import tempfile
-import textwrap
-import sys
-import os
-import re
-
 import textwrap
 import tempfile
 import subprocess

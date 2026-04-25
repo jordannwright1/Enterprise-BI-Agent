@@ -13,6 +13,7 @@ class NaviState(TypedDict):
     plan: List[str]
     generated_tool_code: str
     last_error: str
+    aggregated_research: str
     research_notes: str
     image_payload: List[str]     # Standardized B64 strings for the UI
     current_skill_id: str
