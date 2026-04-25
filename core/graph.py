@@ -684,6 +684,11 @@ def skill_creator_node(state: NaviState):
                 }
 
         task_id = get_skill_name(task)
+        try:
+            print(f"DEBUGGING CODE TO BE PARSED:\n{code}") # Look at this in the Streamlit terminal!
+            ast.parse(code)
+        except SyntaxError as e:
+            print(f"SYNTAX ERROR DETECTED: {e}")
         return {
             "generated_tool_code": code,
             "packages": final_packages,
