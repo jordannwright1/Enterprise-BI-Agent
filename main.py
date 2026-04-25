@@ -113,7 +113,7 @@ if "messages" not in st.session_state:
 # --- 2. UI LAYOUT ---
 st.title("Navi: Self-Learning Multi-Purpose Agent")
 st.markdown("""
-Navi is an advanced AI agent that thinks, researches, and executes code in real-time.  Use the sidebar to copy one of the test prompts, or create your own prompt.
+Navi is an advanced AI agent that thinks, researches, generates data visualizations, and executes code in real-time.  This agent maintains a skill library repository and can both load and create new skills.  It can also scrape webpages from multiple sources and generate syntheses and reports.  Use the sidebar to copy one of the test prompts, or create your own prompt.
 """)
 
 st.markdown("---")
