@@ -237,28 +237,49 @@ def extract_clean_code(content: str) -> str:
 
 import subprocess
 import sys
+import os
 
 def ensure_packages(package_list):
-    """Installs missing packages safely and reports failures."""
+    """Installs missing packages safely and handles Playwright's binary requirements."""
     failed_packages = []
     
     for package in package_list:
+        # Normalize the name for the __import__ check (e.g., 'beautifulsoup4' -> 'bs4')
+        # Note: This check is a bit naive for some packages, but works for most.
+        import_name = package.replace('-', '_')
+        if package.lower() == "beautifulsoup4": import_name = "bs4"
+        if package.lower() == "scikit-learn": import_name = "sklearn"
+        if package.lower() == "pyyaml": import_name = "yaml"
+
         try:
             # Check if package is already available
-            __import__(package.replace('-', '_'))
+            __import__(import_name)
         except ImportError:
             try:
                 print(f"📦 System: Installing missing dependency: {package}...")
-                # We use check_call, but wrap it to catch the "exit status 1"
+                # Standard pip install
                 subprocess.check_call([sys.executable, "-m", "pip", "install", package, "--quiet"])
+                
+                # --- THE PLAYWRIGHT SPECIAL CASE ---
+                if package.lower() == "playwright":
+                    print("🚀 Playwright detected! Fetching Chromium binaries...")
+                    # We install ONLY chromium to save time/space in Streamlit
+                    # --with-deps ensures any last-second Linux libs are fetched
+                    subprocess.check_call([sys.executable, "-m", "playwright", "install", "chromium"], timeout=300)
+                    print("✅ Chromium binaries installed successfully.")
+
             except subprocess.CalledProcessError as e:
-                print(f"❌ System: Failed to install {package}")
+                print(f"❌ System: Failed to install {package} (Exit code: {e.returncode})")
                 failed_packages.append(package)
+            except subprocess.TimeoutExpired:
+                print(f"⚠️ System: Playwright install timed out.")
+                failed_packages.append(f"{package} (timeout)")
             except Exception as e:
                 print(f"⚠️ System: Unexpected error installing {package}: {e}")
                 failed_packages.append(package)
                 
-    return failed_packages # Return the list of failures
+    return failed_packages
+
 
 def extract_section(text, section_header):
     """
