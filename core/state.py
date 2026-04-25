@@ -1,13 +1,14 @@
-from typing import Annotated, List, TypedDict, Optional
+from typing import Annotated, List, TypedDict, Optional, Sequence
 import operator
 from langchain_core.messages import BaseMessage
+from langgraph.graph.message import add_messages
 
 class NaviState(TypedDict):
     # Core Communication
     user_input: str             # The raw prompt from the user
     task: str            # The distilled task the planner is working on
     final_answer: str            # The final output (Text or Markdown)
-    
+    history: Annotated[Sequence[BaseMessage], add_messages]
     # Technical Data
     plan: List[str]
     generated_tool_code: str

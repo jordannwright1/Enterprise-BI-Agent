@@ -33,6 +33,142 @@ def get_skill_name(task_description: str) -> str:
     name = re.sub(r'[^a-z0-9_]', '', response.content.lower().replace(" ", "_"))
     return name
 
+from playwright.sync_api import sync_playwright
+from bs4 import BeautifulSoup
+import re
+import time
+from urllib.parse import urljoin
+from collections import Counter
+
+def universal_scraper(url, task_query="", max_depth=1):
+    result = {
+        "mode": "structured_blocks",
+        "status": "initializing",
+        "data": [],
+        "observations": {}
+    }
+
+    try:
+        if not url or not isinstance(url, str):
+            result["mode"] = "error"
+            result["data"] = "Invalid URL"
+            return result
+        
+        target_url = url.strip()
+        if not target_url.startswith(('http', 'https')):
+            target_url = 'https://' + target_url
+
+        visited = set()
+        to_visit = [(target_url, 0)]
+        seen_titles = set()
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page(user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+
+            while to_visit:
+                curr, depth = to_visit.pop(0)
+                if curr in visited or depth > max_depth: continue
+                visited.add(curr)
+
+                try:
+                    page.goto(curr, wait_until='domcontentloaded', timeout=20000)
+                    time.sleep(2)
+                    
+                    soup = BeautifulSoup(page.content(), 'html.parser')
+                    # Pre-cleaning remains the same
+                    for noise in soup(["script", "style", "form", "svg", "noscript", "nav", "footer"]):
+                        noise.decompose()
+
+                    # 1. ENHANCED Structural Pattern Detection
+                    all_elements = soup.find_all(True)
+                    pattern_candidates = []
+                    
+                    for el in all_elements:
+                        if el.name in ['div', 'tr', 'li', 'article', 'section']:
+                            tag_class = f"{el.name}.{'.'.join(el.get('class', []))}"
+                            link = el.find('a')
+                            if link:
+                                # HEURISTIC: Content rows usually have more text and metadata (digits)
+                                # than navigation menus.
+                                text_len = len(el.get_text(strip=True))
+                                link_len = len(link.get_text(strip=True))
+                                has_digits = 1 if re.search(r'\d+', el.get_text()) else 0
+                                
+                                # We store the pattern and its 'content weight'
+                                pattern_candidates.append({
+                                    "pattern": tag_class,
+                                    "weight": text_len + (has_digits * 20),
+                                    "link_len": link_len
+                                })
+
+                    # Filter: Find the best pattern by average weight, not just count
+                    avg_weights = {}
+                    counts = Counter([c["pattern"] for c in pattern_candidates])
+                    
+                    for cand in pattern_candidates:
+                        p = cand["pattern"]
+                        avg_weights[p] = avg_weights.get(p, 0) + cand["weight"]
+                    
+                    # Sort patterns by (total_weight / count) * count, but penalize short links (menus)
+                    best_pattern = None
+                    sorted_patterns = sorted(counts.items(), key=lambda x: (avg_weights[x[0]] / x[1]) * x[1], reverse=True)
+                    
+                    for p_name, count in sorted_patterns:
+                        # Skip patterns where the links are typically very short (like 'new', 'past')
+                        sample_link_len = next(c["link_len"] for c in pattern_candidates if c["pattern"] == p_name)
+                        if count >= 3 and sample_link_len > 10: 
+                            best_pattern = p_name
+                            break
+
+                    if best_pattern:
+                        tag, *classes = best_pattern.split('.')
+                        containers = soup.find_all(tag, class_=classes)
+                    else:
+                        containers = soup.find_all(['tr', 'li', 'article'])
+
+                    # 2. Adaptive Extraction (Preserved Logic)
+                    for i, item in enumerate(containers):
+                        links = item.find_all('a', href=True)
+                        # Pick the title link: longest text within the item
+                        title_link = max(links, key=lambda a: len(a.get_text(strip=True)), default=None)
+                        title = title_link.get_text(strip=True) if title_link else ""
+
+                        # TWEAK: Increase character threshold slightly to ignore small menu items
+                        if len(title) > 12 and title not in seen_titles:
+                            full_context = item.get_text(" ", strip=True)
+                            if i + 1 < len(containers):
+                                full_context += " " + containers[i+1].get_text(" ", strip=True)
+
+                            score_m = re.search(r'(\d+)\s*(pts|points|score|upvotes)', full_context, re.I)
+                            author_m = re.search(r'(?:by|user|author)\s+([a-zA-Z0-9_-]+)', full_context, re.I)
+                            
+                            result["data"].append({
+                                "Title": title,
+                                "Score": score_m.group(1) if score_m else "0",
+                                "Author": author_m.group(1) if author_m else "unknown",
+                                "Link": urljoin(curr, title_link['href']) if title_link else ""
+                            })
+                            seen_titles.add(title)
+
+                        if len(result["data"]) >= 20: break 
+
+                except: continue
+            
+            browser.close()
+
+        if not result["data"]:
+            result["mode"] = "narrative_blocks"
+            result["data"] = ["No content patterns found. The site may be using non-standard data layouts."]
+        else:
+            result["status"] = "success"
+            result["mode"] = "structured_blocks" 
+
+        return result
+
+    except Exception as e:
+        return {"mode": "error", "status": "failed", "data": str(e)}        
+
 
 def extract_clean_code(content: str) -> str:
     # 1. Primary Extraction
@@ -317,7 +453,7 @@ def research_node(state: NaviState):
     ### 📋 OUTPUT FORMAT
     Respond ONLY in the following JSON format. Ensure the "code" value is a single string with escaped newlines:
     {{
-        "diagnosis": "Short paragraph summary of the error",
+        "diagnosis": "Short paragraph summary of the error and the solution to the problem.  You must include a solution that is one to two sentences long.",
         "solution_logic": "Two sentence strategy",
         "code": "The corrected python code block"
     }}
@@ -376,6 +512,49 @@ def skill_creator_node(state: NaviState):
     previous_code = state.get("generated_tool_code", "")
     executor_logs = state.get("executor_logs", "") # New: pass the actual crash logs
     error_msg = ""
+    history = state.get("history", [])
+    
+    # Get the last message's content
+    if not history:
+        user_input = state.get("task", "") # Fallback to task key
+    else:
+        user_input = history[-1].content
+
+    # 2. Hardcoded Trigger Check
+    is_scraping_task = any(word in user_input.lower() for word in ["http", "www.", "scrape", "extract", "visit"])
+    
+    # Initialize the base instructions
+    scraping_context = "Task: Write a Python function `execute_skill()` to solve the user's request."
+
+    if is_scraping_task:
+        # Extract URL from the prompt using Regex
+        url_match = re.search(r'https?://[^\s]+', user_input)
+        if url_match:
+            target_url = url_match.group(0)
+            
+            # --- CALL THE HARDCODED PLAYWRIGHT SCRAPER ---
+            # This runs BEFORE the LLM logic
+            raw_data = universal_scraper(target_url, task_query=user_input) 
+            
+            if raw_data["mode"] == "structured_blocks":
+                scraping_context = f"""
+                CRITICAL: I have successfully retrieved data from {target_url} using Playwright.
+                The page is pre-processed into 'Semantic Blocks'.
+                
+                DATA BLOCKS:
+                {raw_data['data']}
+                
+                TASK: Write `execute_skill()` to:
+                1. Iterate through these blocks.
+                2. Use Regex or String splitting to extract the data (Titles, Scores, etc.).
+                3. Return the final structured output.
+                """
+            else:
+                # Handle blocked sessions or crashes
+                scraping_context = f"The scraper returned an error: {raw_data['data']}. Explain the block to the user."
+        else:
+            scraping_context = "The user wants to scrape but didn't provide a URL. Ask for one."
+
 
     prompt = f"""
     ### ROLE: Principal AI Automation Architect
@@ -385,6 +564,7 @@ def skill_creator_node(state: NaviState):
 
     ### MISSION
     {task}
+    {scraping_context}
 
     ### DATA & INTELLIGENCE
     - RESEARCH GUIDANCE: {research_notes if research_notes else "No specific research provided. Use the most modern, stable Python libraries for this domain."}
@@ -436,7 +616,7 @@ def skill_creator_node(state: NaviState):
     return f"Analysis Complete. [IMAGE_DATA_HIDDEN_0] {{final_chart}}"
     ```
 
-    Return ALL visualizations as base64 strings in the console, don't create png files.
+    Return ALL visualizations as base64 strings in the console, don't create png files.  Don't return visuals unless the user explicitly asks for them.
 
     ### OUTPUT FORMAT:
     Ensure the entire execute_tool() function and its imports are provided in a single code block. DO NOT include any text outside the code block. If you are building on previous code, re-write the entire function; do not provide snippets. 
@@ -504,7 +684,7 @@ def skill_creator_node(state: NaviState):
         return {
             "generated_tool_code": code,
             "packages": final_packages,
-            "current_skill_id": task_id, 
+            "current_skill_id": task_id,
             "last_error": last_error, # Pass the error forward so it's not wiped from state
             "plan": state.get('plan', []) + [f"### 🛠 Code Generated: {task_id}"]
         }
@@ -722,7 +902,7 @@ def meditation_node(state: NaviState):
     2. Decide if a new strategy can solve this or if it's a 'Hard Stop' requiring human intervention.
     
     If fixable: Suggest a SPECIFIC revised strategy for the Planner.
-    If not: Explain clearly to the user why we cannot proceed and what they must provide.
+    If not: Explain clearly to the user why we cannot proceed and what they must provide.  If you decide escalation to human intervention is necessary be sure to include the words 'hard stop' or 'human intervention' in your response.
     """
     try:
 
