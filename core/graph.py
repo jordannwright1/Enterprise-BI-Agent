@@ -262,15 +262,18 @@ def ensure_packages(package_list):
                 
                 # --- THE PLAYWRIGHT SPECIAL CASE ---
                 if package.lower() == "playwright":
-                    print("🚀 Playwright detected! Fetching Chromium binaries...")
-                    # Force the binaries into a specific local folder within your app directory
+                    print("🚀 Forcing Playwright Browser into local project folder...")
+                    # This path is relative to your root /mount/src/enterprise-bi-agent/
+                    local_browser_path = os.path.join(os.getcwd(), ".playwright_bins")
+                    os.makedirs(local_browser_path, exist_ok=True)
+    
                     env = os.environ.copy()
-                    env["PLAYWRIGHT_BROWSERS_PATH"] = "0"  # This tells playwright to install inside the venv
+                    env["PLAYWRIGHT_BROWSERS_PATH"] = local_browser_path
     
                     subprocess.check_call(
                     [sys.executable, "-m", "playwright", "install", "chromium"], 
                     env=env
-                    )
+                )
 
             except subprocess.CalledProcessError as e:
                 print(f"❌ System: Failed to install {package} (Exit code: {e.returncode})")
