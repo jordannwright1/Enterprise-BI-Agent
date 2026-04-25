@@ -14,13 +14,16 @@ import subprocess
 import sys
 
 # --- 1. CONFIGURATION & ENVIRONMENT ---
-# MUST BE SET BEFORE ANY CORE IMPORTS CALL PLAYWRIGHT
-root_path = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(root_path)
+# Get the absolute path of the directory containing main.py
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Force Python to look in the root and the core folder
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
 
 # Force Playwright to use a local folder within the Streamlit mount
 # This ensures persistence and visibility across sub-processes
-local_bins = os.path.join(root_path, ".playwright_bins")
+local_bins = os.path.join(ROOT_DIR, ".playwright_bins")
 os.environ["PLAYWRIGHT_BROWSERS_PATH"] = local_bins
 os.makedirs(local_bins, exist_ok=True)
 
