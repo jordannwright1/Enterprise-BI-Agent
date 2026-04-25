@@ -3,3 +3,4 @@ venv
 navi_outputs
 tools
 __pycache__/
+.playwright_bins

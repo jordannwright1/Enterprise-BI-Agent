@@ -40,6 +40,9 @@ import re
 from urllib.parse import urljoin, urlparse
 
 def universal_scraper(url, task_query, max_depth=1):
+    from bs4 import BeautifulSoup
+    from urllib.parse import urljoin, urlparse
+    import json
     result = {"mode": "structured_blocks", "status": "initializing", "data": ""}
     
     # --- 1. THE "END THE ANNOYANCE" TARGET LOGIC ---
@@ -320,112 +323,133 @@ llm_fast = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
 
 # --- Node 1: Planner ---
 def planner_node(state: NaviState):
+    """
+    UNIVERSAL PLANNER NODE - V2 (Anti-Loop Edition)
+    Acts as the central nervous system for routing between 
+    Research, Execution, and Final Synthesis.
+    """
     final_ans_raw = state.get("final_answer")
     last_error = state.get("last_error")
     retry_count = state.get("retry_count", 0)
     plan = state.get("plan", [])
     task = state.get("task")
     meditation_notes = state.get("meditation_notes")
-
-    # Helper for scannability
-    last_step = str(plan[-1]).upper() if plan else ""
     
-    # 1. MEDITATION / TERMINAL CHECK
-    if meditation_notes:
+    # ---------------------------------------------------------
+    # 1. ESCALATION & TERMINATION (The "Panic" Logic)
+    # ---------------------------------------------------------
+    if meditation_notes or (retry_count >= 3 and last_error):
         if retry_count >= 3:
-            print("🛑 Planner: Maximum tries reached. Triggering Hard Stop.")
-            # We set is_terminal so the conditional edge routes to conversation
+            print("🛑 Planner: Maximum recovery attempts reached. Terminating.")
             return {
                 "is_terminal": True,
                 "plan": plan + ["### 🏁 ACTION: TERMINATED"]
             }
         
-        print(f"🧘 Planner: Meditation received. Attempting recovery {retry_count + 1}/3")
+        print(f"🧘 Planner: Meditation active. Routing to Recovery Mode ({retry_count + 1}/3)")
         return {
             "plan": plan + ["### 🛠️ ACTION: CODE"],
             "retry_count": retry_count + 1,
-            "last_error": last_error # PERSIST the error so Researcher can see it
+            "last_error": last_error 
         }
-    
-    # 2. SUCCESS PATH (Only if no errors are pending)
+
+    # ---------------------------------------------------------
+    # 2. AUDIT & RECURSION GATE (The "Is it Finished?" Logic)
+    # ---------------------------------------------------------
     if final_ans_raw and not last_error:
-    # 1. Check if we've already finished to prevent loops
-        if "EXIT" in last_step:
+        if plan and "EXIT" in str(plan[-1]).upper():
             return {}
 
-        print("✨ Planner: Task complete. Generating final summary...")
-    
-        # 2. Strip Base64 to prevent the 413 error
-        clean_data = re.sub(r'iVBORw0KGgoAAAANSUhEUg[A-Za-z0-9\+/=\s\n]+', '[IMAGE_DATA_HIDDEN]', str(final_ans_raw))
-    
-        format_prompt = f"""
-        You are Navi, a professional AI assistant. 
-        User Task: {task}
-        Raw Data Found: {clean_data}
-    
-        Provide a friendly, professional summary. 
-        - Do not mention or explain the Base64/Image strings.
-        - Never provide individual data points used for graphs.
-        - Never provide code blocks.
-        - Do not include tags (like <br>) in your response, just regular text.
-        - Use tables or bullets for clarity, favor tables over bullets unless the user explicitly asks for a list or a list would be helpful.
+        print(f"🧐 Planner: Auditing objective satisfaction (Cycle {retry_count})...")
+        
+        audit_prompt = f"""
+        Objective: {task}
+        Latest Result Data: {str(final_ans_raw)[:3000]}
+        
+        CRITICAL AUDIT:
+        1. Does the result contain actual data points requested (e.g., names, stats, summaries)?
+        2. Is the content mostly 'bot detected' errors or empty blocks?
+        3. Is there a clear, high-value 'Next Step' that hasn't been taken?
+
+        If the objective is substantially satisfied, or we have hit a point of diminishing returns, respond: 'COMPLETE'.
+        If the data is genuinely missing or the results are only meta-links, respond: 'CONTINUE'.
         """
+        audit_decision = llm_fast.invoke(audit_prompt).content.strip().upper()
+
+        # LOOP BREAKER: If Auditor says CONTINUE but we've already tried to 
+        # refine results 2+ times, we override and force COMPLETE to prevent loops.
+        if "CONTINUE" in audit_decision and retry_count < 2:
+            print("🔄 Planner: Data gap detected. Refreshing context for next cycle.")
+            return {
+                "plan": plan + ["### 🛠️ ACTION: CODE"], 
+                "final_answer": None, 
+                "last_error": None,
+                "retry_count": retry_count + 1,
+                "research_notes": f"Previous Discovery (Needs Refinement): {str(final_ans_raw)[:1000]}"
+            }
+
+        # --- FINAL SYNTHESIS ---
+        print("✨ Planner: Logic satisfied. Synthesizing final response.")
+        
+        format_prompt = f"""
+        Original User Task: {task}
+        Verified Scrape Data: {final_ans_raw}
     
+        You are a clean-up agent. Generate a professional response:
+        1. Ignore any obviously hallucinated or placeholder data (e.g. news from 2024 if the scrape was for 2026).
+        2. Use Markdown tables for comparisons and bullets for lists.
+        3. If some data was blocked by bots, summarize what WAS found successfully.
+        4. Remove all internal logs, [DEBUG] tags, or technical metadata.
+        """
         summary_response = llm_fast.invoke(format_prompt).content.strip()
     
-        # 3. FIX: We overwrite final_answer with the clean summary 
-        # and explicitly clear the 'raw' logs/errors to signal completion
         return {
-            "final_answer": summary_response, # This becomes the ONLY thing the user sees
-            "last_error": None,               # Clear errors to satisfy the route_after_plan logic
+            "final_answer": summary_response, 
+            "last_error": None,               
             "plan": plan + ["### 🏁 ACTION: EXIT"]
         }
 
-    # 3. ERROR HANDLING / RETRY PATH
+    # ---------------------------------------------------------
+    # 3. DYNAMIC ERROR RECOVERY
+    # ---------------------------------------------------------
     if last_error:
-        if retry_count < 1:
-            print(f"🔄 Planner: Fast Retry (Attempt {retry_count + 1})")
+        if retry_count < 2:
+            print(f"🛠️ Planner: Execution error. Attempting Auto-Repair ({retry_count + 1})")
             return {
                 "plan": plan + ["### 🛠️ ACTION: CODE"],
                 "last_error": last_error,
                 "retry_count": retry_count + 1
             }
         else:
-            print("🚨 Planner: Informed attempts failed. Routing to RESEARCH.")
+            print("🔍 Planner: Code repair failed. Escalating to deep Research.")
             return {
                 "plan": plan + ["### 🔍 ACTION: RESEARCH"],
                 "last_error": last_error, 
                 "retry_count": 0 
             }
 
-    # 4. POST-RESEARCH ROUTING
-    if "RESEARCH" in last_step:
-        print("💡 Planner: Research complete. Routing to Skill Creator.")
-        return {
-            "plan": plan + ["### 🛠️ ACTION: CODE"],
-            "last_error": last_error,
-            "retry_count": 0
-        }
-    
-    # 5. INITIAL START - SKILL CHECK
+    # ---------------------------------------------------------
+    # 4. SKILL CACHE & COLD START
+    # ---------------------------------------------------------
     skill_id = get_skill_name(task)
     existing_skill = get_skill(skill_id) 
     
     if existing_skill and not plan:
-        print(f"🧠 ### 💾 ACTION: LOAD_SKILL - {skill_id}")
+        print(f"🧠 Planner: Found existing Skill Match: {skill_id}")
         return {
-            "plan": plan + ["### 💾 ACTION: LOAD_SKILL"],
+            "plan": ["### 💾 ACTION: LOAD_SKILL"],
             "generated_tool_code": existing_skill['code'],
             "packages": existing_skill.get('packages', []),
             "retry_count": 0
         }
 
-    # 6. DEFAULT START
+    # Default Entrance
+    print("🚀 Planner: Initiating new Task Sequence.")
     return {
-        "plan": plan + ["### 🛠️ ACTION: CODE"], 
-        "retry_count": 0, 
-        "task": task
+        "plan": ["### 🛠️ ACTION: CODE"], 
+        "retry_count": 0
     }
+
 
 def extract_dependencies(code):
     # 1. Extract all top-level imports and 'from x import y'
@@ -627,37 +651,38 @@ def skill_creator_node(state: NaviState):
 
     # 2. Final Prompt Construction
     prompt = f"""
-    ### ROLE: Principal AI Automation Architect (Navi System)
+    ### ROLE: Navi Automation Architect
     
-    ### MISSION
-    {task}
+    ### MISSION: {task}
 
-    ### DATA & INTELLIGENCE
-    - RESEARCH GUIDANCE: {research_notes if research_notes else "None."}
-    - PREVIOUS ERRORS: {f"CODE: {last_error}" if last_error else "None."}
-    - EXECUTION LOGS: {executor_logs if executor_logs else "No logs."}
-    - RECENT CODE: {previous_code}
-    - MEDITATION: {meditation_notes}
+    ### THE TOOLS (ONLY USE THESE)
+    1. **To Search**: Use `from ddgs import DDGS`. 
+       - Dictionary key for the link is 'href'.
+    2. **To Scrape**: Use `universal_scraper(url, task_query)`. 
+       - This function is ALREADY defined. DO NOT import it.
 
-    ### MANDATORY TOOL SELECTION LOGIC:
-    1. **DATA ANALYSIS**: Use `pandas` and `numpy`.
-    2. **FILE/SYSTEM**: Use `os` and `pathlib` for safety.
-    3. **UTILITIES**: Use `json`, `re`, and `datetime`.
+    ### THE RULES
+    - Return ONLY the code for `execute_tool()`.
+    - DO NOT use requests, BeautifulSoup, or playwright.
+    - DO NOT explain anything.
+    - Search using site:techcrunch.com "AI" to ensure we get results from the correct domain.
 
-    ### 🚫 THE FORBIDDEN LIST (DO NOT USE)
-    - **BeautifulSoup / bs4**: STRICTLY FORBIDDEN.
-    - **Selenium**: Do not use.
+    ### EXAMPLE STRUCTURE
+    ```python
+    from ddgs import DDGS
 
-    ### 🚨 LITE-MODEL (8B) CRASH PREVENTION
-    - **REGEX SAFETY**: NEVER chain `.group()` directly to a regex call. 
-      - WRONG: `re.search(p, t).group(1)`
-      - RIGHT: `m = re.search(p, t); val = m.group(1) if m else None`
-    - **NONE-TYPE PROTECTION**: Always verify objects are not None before accessing attributes (e.g., `.get()`, `.text`).
+    user_goal = state.get("task")
 
-    IMPORTANT: Playwright and Chromium are already installed and configured at /mount/src/enterprise-bi-agent/.playwright_bins. Do NOT attempt to install dependencies or browsers. Use sync_playwright() with headless=True and args=['--no-sandbox'] to scrape.
-
-    ### OUTPUT FORMAT:
-    Provide only the `execute_tool()` function in a code block. Do not include conversational filler.
+    def execute_tool():
+        with DDGS() as ddgs:
+            # Step 1: Search
+            links = [r['href'] for r in ddgs.text("query", max_results=5)]
+        
+        # Step 2: Scrape each link and return the list of text
+        return [universal_scraper(url, task_query=user_goal) for url in links]
+    ```
+    
+    ### GENERATE CODE:
     """
 
     # Tiered Intelligence Waterfall
@@ -723,32 +748,50 @@ def executor_node(state: NaviState):
     retry_count = state.get('retry_count', 0)
     current_plan = state.get('plan', [])
     task = state.get("task")
-
+    internal_tools = ["universal_scraper", "ddgs_search", "NaviState"] 
+    filtered_packages = [p for p in packages if p not in internal_tools]
     if not code:
         return {
             "last_error": "### ❌ Execution Failed\nNo code found.",
             "retry_count": retry_count + 1,
             "plan": current_plan + ["### ❌ No Code to Execute"]
         }
-
+    import inspect
+    try:
+        scraper_code = inspect.getsource(universal_scraper)
+    except Exception as e:
+        print(f"⚠️ Warning: Could not find universal_scraper source: {e}")
+        scraper_code = "def universal_scraper(url): return 'Error: Scraper source missing.'"
     # 1. WRAP & DEDENT (Ensuring strict output markers)
     raw_script = f"""
 import sys
 import io
 import json
 import re
+import os
+from playwright.sync_api import sync_playwright
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin, urlparse
+import json
+
+
 
 # Force UTF-8 and unbuffered output
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
 
+# --- INJECTED UTILITIES (From graph.py) ---
+{scraper_code}
+
+# --- NAVI GENERATED CODE ---
 {code}
 
 if __name__ == "__main__":
     try:
         # Check if execute_tool exists
         if 'execute_tool' not in globals():
-            print("EXECUTION_ERROR: Function 'execute_tool' not defined in generated code.")
+            sys.stdout.write("EXECUTION_ERROR: Function 'execute_tool' not defined in generated code.\\n")
         else:
+            # We call the generated tool, which now has access to universal_scraper()
             result = execute_tool()
             output = str(result) if result is not None else "NAVI_EMPTY_RESULT"
             
@@ -758,15 +801,17 @@ if __name__ == "__main__":
             sys.stdout.write("\\n---NAVI_RESULT_END---\\n")
             sys.stdout.flush()
     except Exception as e:
-        print(f"EXECUTION_ERROR: {{e}}")
+        # Catching and printing the error so the Planner can see it in state['last_error']
+        sys.stdout.write(f"EXECUTION_ERROR: {{e}}\\n")
         sys.stdout.flush()
-"""    
+"""
+
     full_script = textwrap.dedent(raw_script).strip()
 
     # 2. DYNAMIC PACKAGE INSTALLATION
-    if packages:
-        print(f"📦 Checking/Installing dependencies: {', '.join(packages)}")
-        for pkg in packages:
+    if filtered_packages:
+        print(f"📦 Checking/Installing dependencies: {', '.join(filtered_packages)}")
+        for pkg in filtered_packages:
             try:
                 subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "--quiet"])
             except Exception as e:
@@ -1004,33 +1049,48 @@ def is_task_input(user_input: str) -> bool:
 # --- Conditional Routing Logic ---
 def route_after_plan(state: NaviState):
     plan = state.get("plan", [])
-    if not plan: return "skill_creation"
+    # If no plan exists, we default to skill_creation to try and make progress
+    if not plan: 
+        print("🎯 Router: No plan found. Defaulting to Skill Creation.")
+        return "skill_creation"
     
     last_step = str(plan[-1]).upper()
     print(f"DEBUG [Router] - Deciding path for: {last_step}")
 
-    if "EXIT" in last_step or "TERMINATED" in last_step:
+    # --- EXIT CONDITION ---
+    # The Planner must explicitly say 'EXIT', 'TERMINATED', or 'FINISH' 
+    # when it sees that the results in history satisfy the user's original request.
+    if any(keyword in last_step for keyword in ["EXIT", "TERMINATED", "FINISH", "COMPLETED"]):
+        print("🏁 Router: Task marked as complete. Terminating workflow.")
         return END
     
+    # --- RESEARCH BRANCH ---
+    # If the Planner realizes it needs more external info (like searching for links)
     if "RESEARCH" in last_step:
-      print("🎯 Router: Match! Redirecting to Research Node.") 
-      return "research"
+        print("🎯 Router: Match! Redirecting to Research Node.") 
+        return "research"
     
+    # --- ACTION BRANCH ---
+    # Default to skill_creation to execute the next tool in the sequence
+    print("🛠️ Router: Proceeding to Skill Creation/Execution.")
     return "skill_creation"
 
 
 def route_after_execution(state: NaviState):
     last_err = state.get("last_error")
+    # We check the final_answer which holds the string result of the subprocess
     raw_ans = str(state.get("final_answer", "")).lower()
     
-    # If the node flagged an error OR the string looks like an error
-    if last_err or "error occurred" in raw_ans or "occurred" in raw_ans:
-        print(f"🎯 Router: Redirecting to Planner for error handling.")
+    # 1. Error Handling: If the code crashed or the soft-check caught an error
+    if last_err or "error occurred" in raw_ans or "traceback" in raw_ans:
+        print(f"🎯 Router: Execution issue detected. Redirecting to Planner for repair.")
         return "planner"
     
-        
+    # 2. Success Path: Always loop back to the Planner.
+    # This is crucial for multi-step tasks. After searching, Navi returns here, 
+    # goes to the Planner, sees the search results, and then plans the 'Scrape' step.
+    print(f"✅ Router: Execution successful. Returning to Planner for next instruction.")
     return "planner"
-
 
 # --- Node Configuration ---
 workflow = StateGraph(NaviState)
