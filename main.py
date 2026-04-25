@@ -10,6 +10,7 @@ import sqlite3
 import base64
 from PIL import Image
 import io
+import subprocess
 
 # --- 1. CONFIGURATION & ENVIRONMENT 
 load_dotenv()

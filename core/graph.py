@@ -91,7 +91,9 @@ def universal_scraper(url, task_query, max_depth=1):
         visited, to_visit, raw_storage, seen_titles = set(), [(target_url, 0)], [], set()
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(headless=True,
+             args=["--no-sandbox", "--disable-dev-shm-usage"]                      
+            )
             page = browser.new_page(user_agent='Mozilla/5.0')
 
             while to_visit and len(raw_storage) < target_count:
