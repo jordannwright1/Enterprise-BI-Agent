@@ -367,6 +367,7 @@ def planner_node(state: NaviState):
         - Do not mention or explain the Base64/Image strings.
         - Never provide individual data points used for graphs.
         - Never provide code blocks.
+        - Do not include tags (like <br>) in your response, just regular text ONLY.
         - Use tables or bullets for clarity.
         """
     
@@ -889,7 +890,7 @@ if __name__ == "__main__":
                 os.remove(temp_path)
             except:
                 pass
-            
+
 
 
 # --- Node 4: Human-in-the-Loop ---
