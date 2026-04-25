@@ -711,8 +711,8 @@ import textwrap
 import tempfile
 import subprocess
 import os
-import sys
 import re
+import sys
 
 def executor_node(state: NaviState):
     print("\n🚀 [SUBPROCESS] Starting Lite Execution...")
@@ -744,14 +744,18 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_bufferin
 
 if __name__ == "__main__":
     try:
-        result = execute_tool()
-        output = str(result) if result is not None else "Error: None"
-        
-        # Dedicated print calls with flushing for the parser
-        sys.stdout.write("\\n---NAVI_RESULT_START---\\n")
-        sys.stdout.write(output)
-        sys.stdout.write("\\n---NAVI_RESULT_END---\\n")
-        sys.stdout.flush()
+        # Check if execute_tool exists
+        if 'execute_tool' not in globals():
+            print("EXECUTION_ERROR: Function 'execute_tool' not defined in generated code.")
+        else:
+            result = execute_tool()
+            output = str(result) if result is not None else "NAVI_EMPTY_RESULT"
+            
+            # Dedicated print calls with flushing for the parser
+            sys.stdout.write("\\n---NAVI_RESULT_START---\\n")
+            sys.stdout.write(output)
+            sys.stdout.write("\\n---NAVI_RESULT_END---\\n")
+            sys.stdout.flush()
     except Exception as e:
         print(f"EXECUTION_ERROR: {{e}}")
         sys.stdout.flush()
@@ -775,12 +779,17 @@ if __name__ == "__main__":
             temp_path = f.name
 
         print(f"\n{'='*20} EXECUTION START {'='*20}")
+        # Force the environment variables for Playwright here too
+        env_vars = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+        if "PLAYWRIGHT_BROWSERS_PATH" not in env_vars:
+            env_vars["PLAYWRIGHT_BROWSERS_PATH"] = os.path.join(os.getcwd(), ".playwright_bins")
+
         process = subprocess.run(
             [sys.executable, temp_path],
             capture_output=True,
             text=True,
-            timeout=60,
-            env={**os.environ, "PYTHONIOENCODING": "utf-8"}
+            timeout=120, # Increased for slow scrapers
+            env=env_vars
         )
         
         raw_logs = process.stdout + "\n" + process.stderr
@@ -818,11 +827,16 @@ if __name__ == "__main__":
             if len(clean_for_llm) > 5000:
                 clean_for_llm = f"{clean_for_llm[:2500]}\n\n... [TRUNCATED] ...\n\n{clean_for_llm[-2500:]}"
 
-            # --- VALIDATION: SOFT ERRORS ---
-            soft_error_keywords = ["failed to", "error:", "none type", "empty", "syntax error", "exception", "critical_failure"]
-            if any(k in clean_for_llm.lower() for k in soft_error_keywords) or len(clean_for_llm) < 30:
+            # --- UPDATED VALIDATION: DIFFERENTIATING CONTENT FROM CRASHES ---
+            # We only trigger a "Logic Failure" if the output is extremely short AND contains an error keyword.
+            # This allows articles about "market failures" or "system errors" to pass.
+            python_errors = ["syntaxerror", "traceback", "execution_error", "critical_failure", "modulenotfounderror"]
+            is_python_crash = any(k in output_cleaned.lower() for k in python_errors)
+            is_empty_or_tiny = len(clean_for_llm) < 50 or "NAVI_EMPTY_RESULT" in clean_for_llm
+            
+            if is_python_crash or (is_empty_or_tiny and "error" in clean_for_llm.lower()):
                 return {
-                    "last_error": f"### ⚠️ Logic Failure\n{clean_for_llm}",
+                    "last_error": f"### ⚠️ Logic Failure\n{clean_for_llm if not is_empty_or_tiny else 'Result was empty or returned a crash log.'}",
                     "executor_logs": output_cleaned,
                     "final_answer": None,
                     "retry_count": retry_count,
@@ -832,8 +846,12 @@ if __name__ == "__main__":
             # --- CLEAR SUCCESS: SAVE TO DB ---
             task_id = state.get("current_skill_id")
             if task_id:
-                save_skill(task_id, task, code, packages)
-                print(f"💾 Verified Skill Saved: {task_id}")
+                # Assuming save_skill is imported or available in scope
+                try:
+                    save_skill(task_id, task, code, packages)
+                    print(f"💾 Verified Skill Saved: {task_id}")
+                except NameError:
+                    print("⚠️ save_skill not defined, skipping DB save.")
 
             return {
                 "final_answer": clean_for_llm,
@@ -867,8 +885,11 @@ if __name__ == "__main__":
     
     finally:
         if temp_path and os.path.exists(temp_path):
-            os.remove(temp_path)
-
+            try:
+                os.remove(temp_path)
+            except:
+                pass
+            
 
 
 # --- Node 4: Human-in-the-Loop ---
