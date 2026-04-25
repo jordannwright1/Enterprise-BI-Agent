@@ -89,7 +89,7 @@ def universal_scraper(url, task_query, max_depth=1):
         if not target_url.startswith('http'): target_url = 'https://' + target_url
 
         visited, to_visit, raw_storage, seen_titles = set(), [(target_url, 0)], [], set()
-        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "0"
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.path.join(os.getcwd(), ".playwright_bins")
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True,
              args=["--no-sandbox", "--disable-dev-shm-usage"]                      
