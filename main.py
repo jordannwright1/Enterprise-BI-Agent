@@ -32,16 +32,13 @@ if st.button("Run Playwright Sanity Check"):
     st.write(test_playwright())
 
 
-if st.sidebar.button("🔨 FIX PLAYWRIGHT (Run this once)"):
-    with st.status("Hard-Installing Chromium...", expanded=True) as status:
-        # 1. Define the absolute path in the mount
+if st.sidebar.button("🔨 INSTALL BROWSER ONLY"):
+    with st.status("Downloading Chromium...", expanded=True) as status:
         bin_path = os.path.join(os.getcwd(), ".playwright_bins")
         os.environ["PLAYWRIGHT_BROWSERS_PATH"] = bin_path
         
-        st.write(f"Targeting: {bin_path}")
-        
-        # 2. Run the install command with 'shell=True' to ensure path resolution
-        cmd = f"{sys.executable} -m playwright install chromium --with-deps"
+        # REMOVED --with-deps to avoid the sudo requirement
+        cmd = f"{sys.executable} -m playwright install chromium"
         
         process = subprocess.run(
             cmd, 
@@ -52,12 +49,11 @@ if st.sidebar.button("🔨 FIX PLAYWRIGHT (Run this once)"):
         )
         
         if process.returncode == 0:
-            st.success("✅ Binaries installed! Now try the scraper.")
-            st.code(process.stdout)
+            st.success("✅ Chromium downloaded successfully!")
         else:
-            st.error("❌ Installation Failed")
+            st.error("❌ Download Failed")
             st.code(process.stderr)
-
+            
 
 # --- 1. CONFIGURATION & ENVIRONMENT ---
 # Get the absolute path of the directory containing main.py
