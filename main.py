@@ -32,33 +32,33 @@ if st.button("Run Playwright Sanity Check"):
     st.write(test_playwright())
 
 
-if st.button("🔨 FORCE RE-INSTALL PLAYWRIGHT"):
-    with st.status("Installing Chromium...", expanded=True) as status:
-        try:
-            st.write("1. Setting environment variables...")
-            local_bins = os.path.join(os.getcwd(), ".playwright_bins")
-            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = local_bins
-            
-            st.write(f"2. Installing to {local_bins}...")
-            # We use '--with-deps' to ensure the Linux libs are linked
-            result = subprocess.run(
-                [sys.executable, "-m", "playwright", "install", "chromium", "--with-deps"],
-                capture_output=True,
-                text=True,
-                env=os.environ
-            )
-            
-            if result.returncode == 0:
-                st.success("✅ Playwright Install Success!")
-                st.code(result.stdout)
-            else:
-                st.error(f"❌ Install Failed (Code {result.returncode})")
-                st.code(result.stderr)
-                
-            status.update(label="Installation Attempt Finished", state="complete")
-        except Exception as e:
-            st.error(f"Fatal Error: {e}")
+if st.sidebar.button("🔨 FIX PLAYWRIGHT (Run this once)"):
+    with st.status("Hard-Installing Chromium...", expanded=True) as status:
+        # 1. Define the absolute path in the mount
+        bin_path = os.path.join(os.getcwd(), ".playwright_bins")
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = bin_path
+        
+        st.write(f"Targeting: {bin_path}")
+        
+        # 2. Run the install command with 'shell=True' to ensure path resolution
+        cmd = f"{sys.executable} -m playwright install chromium --with-deps"
+        
+        process = subprocess.run(
+            cmd, 
+            shell=True, 
+            capture_output=True, 
+            text=True,
+            env=os.environ
+        )
+        
+        if process.returncode == 0:
+            st.success("✅ Binaries installed! Now try the scraper.")
+            st.code(process.stdout)
+        else:
+            st.error("❌ Installation Failed")
+            st.code(process.stderr)
 
+            
 # --- 1. CONFIGURATION & ENVIRONMENT ---
 # Get the absolute path of the directory containing main.py
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
