@@ -89,7 +89,7 @@ def universal_scraper(url, task_query, max_depth=1):
         if not target_url.startswith('http'): target_url = 'https://' + target_url
 
         visited, to_visit, raw_storage, seen_titles = set(), [(target_url, 0)], [], set()
-
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "0"
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True,
              args=["--no-sandbox", "--disable-dev-shm-usage"]                      
@@ -263,10 +263,14 @@ def ensure_packages(package_list):
                 # --- THE PLAYWRIGHT SPECIAL CASE ---
                 if package.lower() == "playwright":
                     print("🚀 Playwright detected! Fetching Chromium binaries...")
-                    # We install ONLY chromium to save time/space in Streamlit
-                    # --with-deps ensures any last-second Linux libs are fetched
-                    subprocess.check_call([sys.executable, "-m", "playwright", "install", "chromium"], timeout=300)
-                    print("✅ Chromium binaries installed successfully.")
+                    # Force the binaries into a specific local folder within your app directory
+                    env = os.environ.copy()
+                    env["PLAYWRIGHT_BROWSERS_PATH"] = "0"  # This tells playwright to install inside the venv
+    
+                    subprocess.check_call(
+                    [sys.executable, "-m", "playwright", "install", "chromium"], 
+                    env=env
+                    )
 
             except subprocess.CalledProcessError as e:
                 print(f"❌ System: Failed to install {package} (Exit code: {e.returncode})")
