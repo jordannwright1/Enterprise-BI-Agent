@@ -14,46 +14,7 @@ import subprocess
 import sys
 from playwright.sync_api import sync_playwright
 os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.path.join(os.getcwd(), ".playwright_bins")
-def test_playwright():
-    try:
-        # Match the path we set in main.py
-        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.path.join(os.getcwd(), ".playwright_bins")
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
-            page = browser.new_page()
-            page.goto("https://google.com")
-            title = page.title()
-            browser.close()
-            return f"✅ Success! Page title: {title}"
-    except Exception as e:
-        return f"❌ Playwright Test Failed: {e}"
 
-if st.button("Run Playwright Sanity Check"):
-    st.write(test_playwright())
-
-
-if st.sidebar.button("🔨 INSTALL BROWSER ONLY"):
-    with st.status("Downloading Chromium...", expanded=True) as status:
-        bin_path = os.path.join(os.getcwd(), ".playwright_bins")
-        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = bin_path
-        
-        # REMOVED --with-deps to avoid the sudo requirement
-        cmd = f"{sys.executable} -m playwright install chromium"
-        
-        process = subprocess.run(
-            cmd, 
-            shell=True, 
-            capture_output=True, 
-            text=True,
-            env=os.environ
-        )
-        
-        if process.returncode == 0:
-            st.success("✅ Chromium downloaded successfully!")
-        else:
-            st.error("❌ Download Failed")
-            st.code(process.stderr)
-            
 
 # --- 1. CONFIGURATION & ENVIRONMENT ---
 # Get the absolute path of the directory containing main.py
