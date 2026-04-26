@@ -429,9 +429,9 @@ llm_fast = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
 # --- Node 1: Planner ---
 def planner_node(state: NaviState):
     """
-    UNIVERSAL PLANNER NODE - V2 (Anti-Loop Edition)
-    Acts as the central nervous system for routing between 
-    Research, Execution, and Final Synthesis.
+    UNIVERSAL PLANNER NODE - V2.2 (Strict Escalation Edition)
+    Manages the lifecycle of a task through automated repair, 
+    external research, and philosophical meditation.
     """
     final_ans_raw = state.get("final_answer")
     last_error = state.get("last_error")
@@ -443,26 +443,30 @@ def planner_node(state: NaviState):
     # ---------------------------------------------------------
     # 1. ESCALATION & TERMINATION (The "Panic" Logic)
     # ---------------------------------------------------------
-    if meditation_notes or (retry_count >= 3 and last_error):
-        if retry_count >= 3:
-            print("🛑 Planner: Maximum recovery attempts reached. Terminating.")
-            return {
-                "is_terminal": True,
-                "plan": plan + ["### 🏁 ACTION: TERMINATED"]
-            }
-        
-        print(f"🧘 Planner: Meditation active. Routing to Recovery Mode ({retry_count + 1}/3)")
+    # returning from Meditation recovery
+    if meditation_notes:
+        print(f"🧘 Planner: Meditation insights received. Routing to Final Recovery Attempt.")
         return {
             "plan": plan + ["### 🛠️ ACTION: CODE"],
             "retry_count": retry_count + 1,
-            "last_error": last_error 
+            "last_error": None,
+            "meditation_notes": None # Reset to prevent loop
+        }
+
+    # If we've already tried everything and reached this node again
+    if retry_count >= 5: 
+        print("🛑 Planner: All recovery tiers exhausted. Shifting to Conversational Mode.")
+        return {
+            "plan": plan + ["### 💬 ACTION: CONVERSE"],
+            "is_terminal": True # This will be the signal for the Router
         }
 
     # ---------------------------------------------------------
     # 2. AUDIT & RECURSION GATE (The "Is it Finished?" Logic)
     # ---------------------------------------------------------
     if final_ans_raw and not last_error:
-        if plan and "EXIT" in str(plan[-1]).upper():
+        # Prevent re-entry if already exiting
+        if plan and any(k in str(plan[-1]).upper() for k in ["EXIT", "TERMINATED"]):
             return {}
 
         print(f"🧐 Planner: Auditing objective satisfaction (Cycle {retry_count})...")
@@ -470,45 +474,34 @@ def planner_node(state: NaviState):
         audit_prompt = f"""
         Objective: {task}
         Latest Result Data: {str(final_ans_raw)[:3000]}
-        Current Memories of Past Conversations: {state['memory_context']}\n\nUse this context to inform your response if relevant.
         
         CRITICAL AUDIT:
-        1. Does the result contain actual data points requested (e.g., names, stats, summaries)?
-        2. Is the content mostly 'bot detected' errors or empty blocks?
-        3. Is there a clear, high-value 'Next Step' that hasn't been taken?
-
-        If the objective is substantially satisfied, or we have hit a point of diminishing returns, respond: 'COMPLETE'.
-        If the data is genuinely missing or the results are only meta-links, respond: 'CONTINUE'.
+        1. Does the result contain actual data points requested?
+        2. Is the content mostly errors or empty blocks?
+        
+        Respond ONLY with 'COMPLETE' or 'CONTINUE'.
         """
         audit_decision = llm_fast.invoke(audit_prompt).content.strip().upper()
 
-        # LOOP BREAKER: If Auditor says CONTINUE but we've already tried to 
-        # refine results 2+ times, we override and force COMPLETE to prevent loops.
+        # Allow code refinement if data is missing, but cap it
         if "CONTINUE" in audit_decision and retry_count < 2:
             print("🔄 Planner: Data gap detected. Refreshing context for next cycle.")
             return {
                 "plan": plan + ["### 🛠️ ACTION: CODE"], 
                 "final_answer": None, 
                 "last_error": None,
-                "retry_count": retry_count + 1,
-                "research_notes": f"Previous Discovery (Needs Refinement): {str(final_ans_raw)[:1000]}"
+                "retry_count": retry_count + 1
             }
 
         # --- FINAL SYNTHESIS ---
         print("✨ Planner: Logic satisfied. Synthesizing final response.")
-        
         format_prompt = f"""
         Original User Task: {task}
         Verified Scrape Data: {final_ans_raw}
+        Memories: {state.get('memory_context', '')}
 
-        Current Memories of Past Conversations: {state['memory_context']}\n\nUse this context to inform your response if relevant.
-
-    
-        You are a clean-up agent. Generate a professional response:
-        1. Ignore any obviously hallucinated or placeholder data (e.g. news from 2024 if the scrape was for 2026).
-        2. Use Markdown tables for comparisons and bullets for lists.
-        3. If some data was blocked by bots, summarize what WAS found successfully.
-        4. Remove all internal logs, [DEBUG] tags, or technical metadata.
+        Generate a professional Markdown response. 
+        Focus on the data found and the synthesized marketing angles.
         """
         summary_response = llm_fast.invoke(format_prompt).content.strip()
     
@@ -519,23 +512,33 @@ def planner_node(state: NaviState):
         }
 
     # ---------------------------------------------------------
-    # 3. DYNAMIC ERROR RECOVERY
+    # 3. DYNAMIC ERROR RECOVERY LADDER
     # ---------------------------------------------------------
     if last_error:
+        # Tier 1: Auto-Repair (0, 1)
         if retry_count < 2:
-            print(f"🛠️ Planner: Execution error. Attempting Auto-Repair ({retry_count + 1})")
             return {
                 "plan": plan + ["### 🛠️ ACTION: CODE"],
                 "last_error": last_error,
                 "retry_count": retry_count + 1
             }
-        else:
-            print("🔍 Planner: Code repair failed. Escalating to deep Research.")
+        
+        # Tier 2: Research (Exactly 2) - Check plan history to prevent double-research
+        elif retry_count == 2 and "RESEARCH COMPLETE" not in str(plan):
+            print("🔍 Planner: Escalating to RESEARCH.")
             return {
                 "plan": plan + ["### 🔍 ACTION: RESEARCH"],
-                "last_error": last_error, 
-                "retry_count": 0 
+                "retry_count": 2 # Keep at 2 so Research Node can run
             }
+        
+        # Tier 3: Meditation (After Research fails or retry_count > 2)
+        else:
+            print("🧘 Planner: Escalating to MEDITATION.")
+            return {
+                "plan": plan + ["### 🧘 ACTION: MEDITATE"],
+                "retry_count": retry_count + 1
+            }
+        
 
     # ---------------------------------------------------------
     # 4. SKILL CACHE & COLD START
@@ -552,12 +555,15 @@ def planner_node(state: NaviState):
             "retry_count": 0
         }
 
-    # Default Entrance
-    print("🚀 Planner: Initiating new Task Sequence.")
-    return {
-        "plan": ["### 🛠️ ACTION: CODE"], 
-        "retry_count": 0
-    }
+    # Initial Entry
+    if not plan:
+        print("🚀 Planner: Initiating new Task Sequence.")
+        return {
+            "plan": ["### 🛠️ ACTION: CODE"], 
+            "retry_count": 0
+        }
+    
+    return {}
 
 
 def extract_dependencies(code):
@@ -679,7 +685,7 @@ def research_node(state: NaviState):
     # 5. Return updated state
     return {
         "research_notes": isolated_code, # Sent to Skill Creator
-        "last_error": f"### 🔍 DIAGNOSIS\n{diagnosis}", # Sent to Streamlit UI
+        "last_error": f"### 🔍 DIAGNOSIS\n{diagnosis}", 
         "consecutive_research_failures": state.get("consecutive_research_failures", 0) + 1,
         "plan": state.get("plan", []) + [f"### 🔍 RESEARCH COMPLETE: {diagnosis}"]
     }
@@ -1164,64 +1170,33 @@ def is_task_input(user_input: str) -> bool:
 # --- Conditional Routing Logic ---
 def route_after_plan(state: NaviState):
     plan = state.get("plan", [])
-    # If no plan exists, we default to skill_creation to try and make progress
-    if not plan: 
-        print("🎯 Router: No plan found. Defaulting to Skill Creation.")
-        return "skill_creation"
+    last_step = str(plan[-1]).upper() if plan else ""
     
-    last_step = str(plan[-1]).upper()
-    print(f"DEBUG [Router] - Deciding path for: {last_step}")
-
-    # --- EXIT CONDITION ---
-    # The Planner must explicitly say 'EXIT', 'TERMINATED', or 'FINISH' 
-    # when it sees that the results in history satisfy the user's original request.
-    if any(keyword in last_step for keyword in ["EXIT", "TERMINATED", "FINISH", "COMPLETED"]):
-        print("🏁 Router: Task marked as complete. Terminating workflow.")
-        return END
+    if "CONVERSE" in last_step:
+        return "conversational"
     
-    # --- RESEARCH BRANCH ---
-    # If the Planner realizes it needs more external info (like searching for links)
+    if any(k in last_step for k in ["EXIT", "TERMINATED"]):
+        return "memory_save"
+    
     if "RESEARCH" in last_step:
-        print("🎯 Router: Match! Redirecting to Research Node.") 
         return "research"
     
-    # --- ACTION BRANCH ---
-    # Default to skill_creation to execute the next tool in the sequence
-    print("🛠️ Router: Proceeding to Skill Creation/Execution.")
+    if "MEDITATE" in last_step:
+        return "meditator"
+    
     return "skill_creation"
 
+
 def route_after_research(state: NaviState):
-    """
-    Decides the path after a research attempt.
-    Routes to Skill Creation on success, or Meditation on failure.
-    """
     plan = state.get("plan", [])
-    last_step = str(plan[-1]).upper() if plan else ""
-    fail_count = state.get("consecutive_research_failures", 0)
-    meditation_used = state.get("meditation_triggered", False)
+    last_step = str(plan[-1]).upper()
+    research_fails = state.get("consecutive_research_failures", 0)
     
-    # Priority 1: Check for explicit EXIT signal from the Researcher
-    # This usually means the LLM couldn't find relevant info.
-    if "EXIT" in last_step:
-        # If we already meditated or have failed too many times, 
-        # go to Planner to finalize a "failure report" and Save Memory.
-        if fail_count >= 2 or meditation_used:
-            print("🛑 Route: Research failed twice. Escalating to Planner for final report.")
-            return "planner"
-        
-        # If this is the first major wall, try to Meditate/Refocus
+    # If research fails twice, move to Meditator
+    if "EXIT" in last_step or research_fails >= 2:
         print("🧘 Route: Research hit a wall. Triggering Meditation.")
         return "meditator"
 
-    # Priority 2: Hard failure cap
-    # Even if no EXIT was called, if we've looped 3 times, stop the madness.
-    if fail_count >= 3:
-        print("🛑 Route: Maximum research attempts reached. Exiting to Planner.")
-        return "planner"
-
-    # Priority 3: Success Path
-    # If the research yielded results and didn't trigger an error, build the tool.
-    print("🛠️ Route: Research successful. Moving to Skill Creation.")
     return "skill_creation"
 
 
@@ -1289,22 +1264,16 @@ workflow.add_conditional_edges(
 
 workflow.add_conditional_edges(
     "meditator",
-    lambda state: "planner" if not state.get("is_terminal") else "memory_save", # Route to save before end
+    lambda state: "planner" if not state.get("is_terminal") else "conversational",
     {
         "planner": "planner",
-        "memory_save": "memory_save"
+        "conversational": "conversational"
     }
 )
 
 # --- 3. UPDATED EXIT LOGIC: Save before END ---
 # Replace END with "memory_save" in all final steps
 
-def route_after_plan(state: NaviState):
-    plan = state.get("plan", [])
-    if plan and "EXIT" in str(plan[-1]).upper():
-        return "memory_save" # Redirect from END to memory_save
-    # ... your existing logic for research/skill_creation
-    return "skill_creation" # placeholder
 
 workflow.add_conditional_edges(
     "planner", 
@@ -1312,7 +1281,9 @@ workflow.add_conditional_edges(
     {
         "skill_creation": "skill_creation", 
         "research": "research", 
-        "memory_save": "memory_save" # Now points here instead of END
+        "meditator": "meditator",
+        "conversational": "conversational", # Add this!
+        "memory_save": "memory_save"
     }
 )
 

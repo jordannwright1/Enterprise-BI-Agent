@@ -63,24 +63,20 @@ def render_sidebar():
         st.markdown("---")
         st.subheader("💡 Example Prompts")
         example_prompts = [
-            """Execute a market entry analysis for a luxury skincare launch in Japan. First, search for the current USD to JPY exchange rate and the average retail price for a high-end luxury face cream at major Tokyo department stores (like Mitsukoshi or Isetan).
+             """Generate a Cross-Platform Tech Intelligence Report.
 
-            Once you have the data, perform a sensitivity analysis: If our production cost is $40 USD per unit, create a heatmap showing our profit per unit in USD. The Y-Axis should represent the Exchange Rate (ranging from 135.0 to 165.0) and the X-Axis should represent the Local Sale Price in JPY (ranging from ¥20,000 to ¥30,000).
+            Strategic Moves (TechCrunch): Go to https://techcrunch.com/ and scrape the first 3 articles. Extract the Author, summarize the entire article in a paragraph summary, and create a one to two sentence summary of the Strategic Impact from the full article pages.
 
-            Finally, scrape recent articles on 'J-Beauty trends 2024-2025' and synthesize 3 specific marketing angles tailored for Ginza shoppers, incorporating traditional ingredients or rituals found in your research.""", """Run a 12-month Monte Carlo simulation (1,000 trials) for a B2B SaaS startup.
+            Product & Culture (The Verge): Go to https://www.theverge.com/ and scrape the first 2 featured stories. Create a paragraph summary for each article, and the list Primary Subject from the full article pages.
+
+            Synthesis Requirement: Create a single 'Executive Briefing' that contrasts the Business/Financial focus of TechCrunch with the Consumer/Product focus of The Verge. Provide a 'Recruiter's Perspective' on which tech sectors (e.g., AI, Fintech, Hardware) are showing the most momentum today based on these 5 sources.""","""Run a 12-month Monte Carlo simulation (1,000 trials) for a B2B SaaS startup.
             Parameters: > 1. Initial Burn: $150k starting capital.
             2. Revenue: $100 Monthly ARPU (Average Revenue Per User).
             3. Acquisition: Normal distribution (Mean=40, StdDev=10) new customers/mo.
             4. Retention: Model a 5% monthly churn rate (compounding).
             5. Costs: Fixed $8k/mo + variable $5/user/mo for infrastructure.
 
-            Task: Visualize the Cash Runway over 12 months. Plot the 5th, 50th, and 95th percentiles of net cash flow. Based on the 'Worst Case' (5th percentile), tell me exactly which month we run out of money and recommend an ARPU or Churn adjustment to survive 18 months.""", """Generate a Cross-Platform Tech Intelligence Report.
-
-            Strategic Moves (TechCrunch): Go to https://techcrunch.com/ and scrape the first 3 articles. Extract the Author, summarize the entire article in a paragraph summary, and create a one to two sentence summary of the Strategic Impact from the full article pages.
-
-            Product & Culture (The Verge): Go to https://www.theverge.com/ and scrape the first 2 featured stories. Create a paragraph summary for each article, and the list Primary Subject from the full article pages.
-
-            Synthesis Requirement: Create a single 'Executive Briefing' that contrasts the Business/Financial focus of TechCrunch with the Consumer/Product focus of The Verge. Provide a 'Recruiter's Perspective' on which tech sectors (e.g., AI, Fintech, Hardware) are showing the most momentum today based on these 5 sources."""
+            Task: Visualize the Cash Runway over 12 months. Plot the 5th, 50th, and 95th percentiles of net cash flow. Based on the 'Worst Case' (5th percentile), tell me exactly which month we run out of money and recommend an ARPU or Churn adjustment to survive 18 months.""", 
         ]
         for ex in example_prompts:
             st.code(ex, language=None)
