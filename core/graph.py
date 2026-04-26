@@ -1,3 +1,7 @@
+import logging
+import os
+os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+logging.getLogger("transformers").setLevel(logging.ERROR)
 import os
 import re
 from langgraph.graph import StateGraph, END
@@ -112,35 +116,31 @@ def universal_scraper(url, task_query, max_depth=1):
     from bs4 import BeautifulSoup
     from urllib.parse import urljoin, urlparse
     import json
+    import re
+    from playwright.sync_api import sync_playwright
+    import os
+    
     result = {"mode": "structured_blocks", "status": "initializing", "data": ""}
     
     # --- 1. THE "END THE ANNOYANCE" TARGET LOGIC ---
     target_count = None
     try:
         domain = urlparse(url).netloc.split('.')[-2].lower() if '.' in url else url.lower()
-        
-        # Look for the domain and then find the first number that appears after it 
-        # but before the next domain or major milestone.
         pattern = rf"{re.escape(domain)}.*?(\d+)"
         match = re.search(pattern, task_query.lower(), re.DOTALL)
         
         if match:
             extracted = int(match.group(1))
-            # If the number is a milestone marker (1, 2, 3), double check context
             if extracted <= 3:
-                # Look at the 30 characters around it for quantity keywords
                 context = task_query.lower()[max(0, match.start()-10) : match.end()+30]
                 if any(w in context for w in ['article', 'story', 'item', 'result', 'top', 'first']):
                     target_count = extracted
             else:
                 target_count = extracted
-
     except Exception as e:
         print(f"[DEBUG] Extraction error: {e}")
 
-    # Final Fallback: Hard default to 3 only if we are truly lost
     if not target_count:
-        # Avoid picking up milestone '1' as a count
         potential_nums = [int(n) for n in re.findall(r'\d+', task_query) if int(n) > 1]
         target_count = potential_nums[0] if potential_nums else 3
     
@@ -157,93 +157,130 @@ def universal_scraper(url, task_query, max_depth=1):
             return all([res.scheme, res.netloc])
         except: return False
 
+    # --- 3. DISCOVERY HELPER (NetNavi Autonomy) ---
+    def discovery_navigator(page, soup, current_url):
+        """Finds 'Next' or pagination links using both Playwright and BeautifulSoup."""
+        found_nav_links = []
+        
+        # Scenario A: Search Engine Pagination (DuckDuckGo/Google)
+        if any(x in current_url for x in ["duckduckgo.com", "google.com"]):
+            nav_selectors = ["a#next", "a:has-text('Next')", "a[aria-label*='Next']"]
+        # Scenario B: Individual Site Pagination
+        else:
+            nav_selectors = [
+                "a:has-text('Next')", "a:has-text('>')", 
+                "a[class*='pagination-next']", "a[class*='next']",
+                "a[href*='page=']", "a:has-text('Older')"
+            ]
+
+        # 1. Try Playwright Selectors (Dynamic/JS)
+        for selector in nav_selectors:
+            try:
+                elements = page.query_selector_all(selector)
+                for el in elements:
+                    href = el.get_attribute("href")
+                    if href:
+                        full_url = urljoin(current_url, href)
+                        if is_valid_url(full_url) and full_url != current_url:
+                            found_nav_links.append(full_url)
+            except: continue
+
+        # 2. Fallback to BeautifulSoup (Static HTML) - Incorporating 'soup'
+        if soup and not found_nav_links:
+            # Look for <a> tags containing 'next' in text or classes
+            for a in soup.find_all('a', href=True):
+                text = a.get_text().lower()
+                classes = str(a.get('class', [])).lower()
+                if any(x in text for x in ['next', 'older', '>']) or 'next' in classes:
+                    full_url = urljoin(current_url, a['href'])
+                    if is_valid_url(full_url) and full_url != current_url:
+                        found_nav_links.append(full_url)
+
+        return list(dict.fromkeys(found_nav_links)) # Unique URLs only
+
     try:
         target_url = url.strip()
         if not target_url.startswith('http'): target_url = 'https://' + target_url
 
         visited, to_visit, raw_storage, seen_titles = set(), [(target_url, 0)], [], set()
         os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.path.join(os.getcwd(), ".playwright_bins")
+        
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True,
-             args=["--no-sandbox", "--disable-dev-shm-usage"]                      
-            )
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
             page = browser.new_page(user_agent='Mozilla/5.0')
 
             while to_visit and len(raw_storage) < target_count:
                 entry = to_visit.pop(0)
                 curr, depth = entry[0], entry[1]
 
-                if not is_valid_url(curr) or curr in visited or depth > max_depth: 
+                if not is_valid_url(curr) or curr in visited or depth > max_depth + 1: 
                     continue
                 
                 visited.add(curr)
-                print(f"[DEPTH {depth}] Navigating: {curr}")
+                print(f"[NAVIGATING] {curr} (Depth: {depth})")
 
                 try:
                     page.goto(curr, wait_until='domcontentloaded', timeout=15000)
                     page.wait_for_timeout(2000) 
                     soup = BeautifulSoup(page.content(), 'html.parser')
                     
-                    if depth == 0:
+                    if depth == 0 or any(x in curr for x in ["page=", "start=", "p="]):
                         # --- HUB PAGE LOGIC ---
-                        found_on_hub = 0
-                        for link in soup.find_all('a', href=True):
-                            # Don't queue more than we need
-                            if found_on_hub >= target_count: break
+                        found_links_on_this_page = 0
+                        link_selectors = 'a[data-testid="result-title-a"]' if "duckduckgo.com" in curr else 'a'
+                        
+                        for link in (soup.select(link_selectors) if "duckduckgo.com" in curr else soup.find_all('a', href=True)):
+                            if len(raw_storage) + found_links_on_this_page >= target_count: break
                                 
                             full_url = urljoin(curr, link['href'])
-                            if any(x in full_url.lower() for x in ['category/', 'tag/', 'cart', 'login']):
+                            if any(x in full_url.lower() for x in ['category/', 'tag/', 'cart', 'login', 'about', 'contact']):
                                 continue
                                 
                             title = (link.get('title') or link.get_text() or "").strip()
-                            if not title or len(title) < 5 or title.lower() in ["techcrunch", "hacker news"]:
-                                continue
+                            if not title or len(title) < 5: continue
                             
                             score = 0
-                            # Verge-specific class and general header check
                             parent_check = link.find_parent(['article', 'h1', 'h2', 'h3', 'h4', 'tr'])
-                            is_headline_class = any("adventure" in str(cls).lower() for cls in link.get('class', []))
+                            is_headline_class = any(x in str(link.get('class', [])).lower() for x in ["adventure", "title", "entry"])
                             
-                            if parent_check or is_headline_class or len(title) > 40: 
-                                score += 30
-                            if any(k in title.lower() for k in keywords): 
-                                score += 20
+                            if parent_check or is_headline_class or len(title) > 35: score += 30
+                            if any(k in title.lower() for k in keywords): score += 20
                             
                             if is_valid_url(full_url) and title not in seen_titles and score >= 30:
-                                to_visit.append((full_url, depth + 1))
+                                to_visit.append((full_url, 1))
                                 seen_titles.add(title)
-                                found_on_hub += 1
+                                found_links_on_this_page += 1
+
+                        # --- PAGINATION DISCOVERY ---
+                        if len(raw_storage) + len(to_visit) < target_count:
+                            # PASSING 'soup' HERE AS WELL
+                            next_pages = discovery_navigator(page, soup, curr)
+                            for next_url in next_pages:
+                                if next_url not in visited:
+                                    print(f"  [DISCOVERY] Found pagination: {next_url}")
+                                    to_visit.append((next_url, 0))
 
                     else:
                         # --- DETAIL PAGE LOGIC ---
                         item_data = {}
                         author_tag = soup.find(['a', 'div', 'span'], class_=re.compile(r'author|byline|user|hnuser', re.I))
-                        if author_tag:
-                            item_data['Source/Author'] = author_tag.get_text(strip=True)
+                        if author_tag: item_data['Source/Author'] = author_tag.get_text(strip=True)
 
                         if "news.ycombinator.com" in url:
                             comment = soup.find('span', class_='commtext')
                             if comment: item_data['Top Comment'] = comment.get_text(strip=True)[:400]
                         
-                        desc_tags = soup.find_all(['p', 'div'], string=re.compile(r'description|summary|content', re.I))
-                        if desc_tags:
-                            content = desc_tags[0].find_next(['p', 'div'])
-                            if content: item_data['Detail'] = content.get_text(strip=True)[:400]
-                        else:
-                            p_tags = soup.find_all('p')
-                            if p_tags:
-                                longest_p = max(p_tags, key=lambda p: len(p.get_text()))
-                                if len(longest_p.get_text()) > 50:
-                                    item_data['Summary'] = longest_p.get_text(strip=True)[:400]
+                        p_tags = soup.find_all('p')
+                        if p_tags:
+                            longest_p = max(p_tags, key=lambda p: len(p.get_text()))
+                            if len(longest_p.get_text()) > 50:
+                                item_data['Summary'] = longest_p.get_text(strip=True)[:400]
 
                         h1 = soup.find('h1') or soup.find('title')
                         if item_data:
                             name = h1.get_text(strip=True) if h1 else "Item"
                             print(f"  [SUCCESS] Extracted: {name}")
                             raw_storage.append({"title": name, "details": item_data})
-                            
-                            if len(raw_storage) >= target_count:
-                                break
 
                 except Exception as e:
                     print(f"  [SKIP] {curr}: {str(e)[:40]}")
@@ -255,7 +292,6 @@ def universal_scraper(url, task_query, max_depth=1):
             result["data"] = "No matching items found."
         else:
             table = [f"### Results for {urlparse(url).netloc}\n| Title | Extracted Details |", "| :--- | :--- |"]
-            # Strict slice to ensure we never return more than requested
             for entry in raw_storage[:target_count]:
                 details = " <br> ".join([f"**{k}**: {v}" for k, v in entry['details'].items()])
                 table.append(f"| {entry['title']} | {details} |")
@@ -265,7 +301,7 @@ def universal_scraper(url, task_query, max_depth=1):
         return result
     except Exception as e:
         return {"mode": "error", "data": str(e)}
-        
+                
 
 def extract_clean_code(content: str) -> str:
     # 1. Primary Extraction
@@ -734,13 +770,14 @@ def skill_creator_node(state: NaviState):
     1. **To Search**: Use `from ddgs import DDGS`. 
        - Dictionary key for the link is 'href'.
     2. **To Scrape**: Use `universal_scraper(url, task_query)`. 
-       - This function is ALREADY defined. DO NOT import it.
+       - This function is ALREADY defined and injected. DO NOT import it.
+       - **NEW CAPABILITY**: This tool now automatically handles pagination and link harvesting.
 
     ### THE RULES
     - Return ONLY the code for `execute_tool()`.
-    - DO NOT use requests, BeautifulSoup, or playwright.
+    - DO NOT use requests, BeautifulSoup, or playwright (these are handled internally by the scraper).
     - DO NOT explain anything.
-    - Search using site:techcrunch.com "AI" to ensure we get results from the correct domain.
+    - Search using site:domain.com "query" to ensure accuracy.
 
     ### EXAMPLE STRUCTURE
     ```python
@@ -753,7 +790,7 @@ def skill_creator_node(state: NaviState):
             # Step 1: Search
             links = [r['href'] for r in ddgs.text("query", max_results=5)]
         
-        # Step 2: Scrape each link and return the list of text
+        # Step 2: Scrape each link. The recursive logic is handled within universal_scraper.
         return [universal_scraper(url, task_query=user_goal) for url in links]
     ```
     
@@ -844,17 +881,15 @@ import io
 import json
 import re
 import os
+import base64
 from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
-import json
-
-
 
 # Force UTF-8 and unbuffered output
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
 
-# --- INJECTED UTILITIES (From graph.py) ---
+# --- INJECTED UTILITIES (The Recursive universal_scraper) ---
 {scraper_code}
 
 # --- NAVI GENERATED CODE ---
@@ -866,17 +901,17 @@ if __name__ == "__main__":
         if 'execute_tool' not in globals():
             sys.stdout.write("EXECUTION_ERROR: Function 'execute_tool' not defined in generated code.\\n")
         else:
-            # We call the generated tool, which now has access to universal_scraper()
+            # Call the generated tool. It has access to the recursive scraper logic.
             result = execute_tool()
             output = str(result) if result is not None else "NAVI_EMPTY_RESULT"
             
-            # Dedicated print calls with flushing for the parser
+            # Standardized output markers for the graph parser
             sys.stdout.write("\\n---NAVI_RESULT_START---\\n")
             sys.stdout.write(output)
             sys.stdout.write("\\n---NAVI_RESULT_END---\\n")
             sys.stdout.flush()
     except Exception as e:
-        # Catching and printing the error so the Planner can see it in state['last_error']
+        # Pass the error back to the graph so the 'meditator' or 'planner' can debug
         sys.stdout.write(f"EXECUTION_ERROR: {{e}}\\n")
         sys.stdout.flush()
 """
