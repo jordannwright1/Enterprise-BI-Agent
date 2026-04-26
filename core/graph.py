@@ -11,9 +11,11 @@ import sys
 import groq
 from importlib import metadata
 import sqlite3
+from langchain_huggingface import HuggingFaceEmbeddings
 import ast
 from core.database import get_skill, save_skill, init_db
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+embeddings_model = HuggingFaceEmbeddings(model_name="BAAI/bge-large-en-v1.5")
 
 def install_package(package):
     try:
@@ -33,6 +35,73 @@ def get_skill_name(task_description: str) -> str:
     # Clean up the output to ensure it's a valid filename/key
     name = re.sub(r'[^a-z0-9_]', '', response.content.lower().replace(" ", "_"))
     return name
+
+import time
+from pinecone import Pinecone
+from langchain_huggingface import HuggingFaceEmbeddings
+
+# 1. Initialize the Embeddings Model (Local & Free)
+# Ensure your Pinecone Index is set to 384 dimensions for this model
+embeddings_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+
+# 2. Initialize Pinecone
+pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+index = pc.Index("navi-memory")
+
+def memory_retrieval_node(state: NaviState):
+    """Pulls relevant past context into the current state."""
+    # Using user_input for better semantic matching
+    query_text = state.get("user_input") or state.get("task")
+    if not query_text:
+        return {"memory_context": ""}
+
+    try:
+        # Generate the vector
+        query_vector = embeddings_model.embed_query(query_text)
+        
+        # Search Pinecone
+        results = index.query(vector=query_vector, top_k=3, include_metadata=True)
+        
+        # Filter by relevance score (0.7 is a good middle ground)
+        past_facts = [res.metadata['text'] for res in results.matches if res.score > 0.7]
+        
+        context_string = "\n".join(past_facts) if past_facts else "No relevant memories found."
+        return {"memory_context": context_string}
+        
+    except Exception as e:
+        print(f"⚠️ Memory Retrieval Error: {e}")
+        return {"memory_context": ""}
+
+def save_memory_node(state: NaviState):
+    """Commits the successful interaction to the Vector DB."""
+    user_msg = state.get("user_input")
+    ai_res = state.get("final_answer")
+    
+    # Validation: Don't save if there's no answer or it's an error message
+    if not ai_res or "ERROR" in ai_res.upper():
+        return {}
+
+    try:
+        text_to_save = f"User: {user_msg}\nNavi: {ai_res}"
+        vector = embeddings_model.embed_query(text_to_save)
+        
+        # Generate a unique ID using the current Unix timestamp
+        current_timestamp = int(time.time()) 
+        unique_id = f"mem_{current_timestamp}"
+        
+        index.upsert(vectors=[{
+            "id": unique_id,
+            "values": vector, 
+            "metadata": {
+                "text": text_to_save,
+                "timestamp": current_timestamp
+            }
+        }])
+        print(f"💾 Memory Saved: {unique_id}")
+    except Exception as e:
+        print(f"⚠️ Memory Save Error: {e}")
+        
+    return {}
 
 from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
@@ -365,6 +434,7 @@ def planner_node(state: NaviState):
         audit_prompt = f"""
         Objective: {task}
         Latest Result Data: {str(final_ans_raw)[:3000]}
+        Current Memories of Past Conversations: {state['memory_context']}\n\nUse this context to inform your response if relevant.
         
         CRITICAL AUDIT:
         1. Does the result contain actual data points requested (e.g., names, stats, summaries)?
@@ -394,6 +464,9 @@ def planner_node(state: NaviState):
         format_prompt = f"""
         Original User Task: {task}
         Verified Scrape Data: {final_ans_raw}
+
+        Current Memories of Past Conversations: {state['memory_context']}\n\nUse this context to inform your response if relevant.
+
     
         You are a clean-up agent. Generate a professional response:
         1. Ignore any obviously hallucinated or placeholder data (e.g. news from 2024 if the scrape was for 2026).
@@ -511,6 +584,8 @@ def research_node(state: NaviState):
     reasoning_prompt = f"""
     ### 🧠 META-ANALYSIS TASK
     Objective: {task}
+
+    Current Memories of Past Conversations: {state['memory_context']}\n\nUse this context to inform your response if relevant.
     
     ### 🚫 FAILED ATTEMPTS
     Architectural patterns tried: {past_strategies if past_strategies else "None"}
@@ -995,13 +1070,15 @@ def conversational_node(state: NaviState):
     is_terminal = state.get("is_terminal", False)
     meditation_notes = state.get("meditation_notes", "")
     last_error = state.get("last_error", "")
-
+    history = state.get("history")
     if is_terminal:
         prompt = f"""
         The system has reached a Hard Stop. You must inform the user why the task cannot be completed.
         
         REASON FROM MEDITATOR: {meditation_notes}
         TECHNICAL ERROR: {last_error}
+
+        Current Memories of Past Conversations: {state['memory_context']}\n\nUse this context to inform your response if relevant.
         
         INSTRUCTIONS:
         - Be professional but firm.
@@ -1011,7 +1088,10 @@ def conversational_node(state: NaviState):
     else:
         prompt = f"""
         Respond to the user's query or greeting professionally and conversationally. 
-    
+
+        Current Memories of Past Conversations (Long Term Memory): {state['memory_context']}\n\nUse this context to inform your response if relevant.
+
+        Short Term Memory: {history}
         USER: {user_input}
         TASK: {task}
         LAST ERROR: {last_error if last_error else ""}
@@ -1075,6 +1155,40 @@ def route_after_plan(state: NaviState):
     print("🛠️ Router: Proceeding to Skill Creation/Execution.")
     return "skill_creation"
 
+def route_after_research(state: NaviState):
+    """
+    Decides the path after a research attempt.
+    Routes to Skill Creation on success, or Meditation on failure.
+    """
+    plan = state.get("plan", [])
+    last_step = str(plan[-1]).upper() if plan else ""
+    fail_count = state.get("consecutive_research_failures", 0)
+    meditation_used = state.get("meditation_triggered", False)
+    
+    # Priority 1: Check for explicit EXIT signal from the Researcher
+    # This usually means the LLM couldn't find relevant info.
+    if "EXIT" in last_step:
+        # If we already meditated or have failed too many times, 
+        # go to Planner to finalize a "failure report" and Save Memory.
+        if fail_count >= 2 or meditation_used:
+            print("🛑 Route: Research failed twice. Escalating to Planner for final report.")
+            return "planner"
+        
+        # If this is the first major wall, try to Meditate/Refocus
+        print("🧘 Route: Research hit a wall. Triggering Meditation.")
+        return "meditator"
+
+    # Priority 2: Hard failure cap
+    # Even if no EXIT was called, if we've looped 3 times, stop the madness.
+    if fail_count >= 3:
+        print("🛑 Route: Maximum research attempts reached. Exiting to Planner.")
+        return "planner"
+
+    # Priority 3: Success Path
+    # If the research yielded results and didn't trigger an error, build the tool.
+    print("🛠️ Route: Research successful. Moving to Skill Creation.")
+    return "skill_creation"
+
 
 def route_after_execution(state: NaviState):
     last_err = state.get("last_error")
@@ -1095,6 +1209,11 @@ def route_after_execution(state: NaviState):
 # --- Node Configuration ---
 workflow = StateGraph(NaviState)
 
+# --- Add the Memory Nodes ---
+workflow.add_node("memory_recall", memory_retrieval_node) # PULL
+workflow.add_node("memory_save", save_memory_node)        # PUSH
+
+# --- Existing Nodes ---
 workflow.add_node("planner", planner_node)
 workflow.add_node("skill_creation", skill_creator_node)
 workflow.add_node("executor", executor_node)
@@ -1102,71 +1221,74 @@ workflow.add_node("research", research_node)
 workflow.add_node("meditator", meditation_node) 
 workflow.add_node("conversational", conversational_node) 
 
-# 1. Entry Logic: Decide if it's a Task or Chat
-def route_start(state: NaviState):
-    # We pull 'task' from the state because we injected it in main.py
+# --- 1. NEW ENTRY POINT: Memory First ---
+# We want Navi to remember BEFORE she thinks.
+workflow.set_entry_point("memory_recall")
+
+# After recall, we check if it's a task or a chat
+def route_after_memory(state: NaviState):
     user_query = state.get("task", "") or state.get("user_input", "")
-    
     if is_task_input(user_query):
         return "planner"
     return "conversational"
 
-workflow.set_conditional_entry_point(
-    route_start,
+workflow.add_conditional_edges(
+    "memory_recall",
+    route_after_memory,
     {
         "planner": "planner",
         "conversational": "conversational"
     }
 )
 
-# 2. Research Routing (The Core Request)
-def route_after_research(state: NaviState):
-    plan = state.get("plan", [])
-    last_step = str(plan[-1]).upper() if plan else ""
-    fail_count = state.get("consecutive_research_failures", 0)
-    
-    # Priority 1: Check if the node explicitly signaled a hard exit
-    if "EXIT" in last_step:
-        # If we've already meditated once and failed again, or hit 2 failures
-        if fail_count > 2:
-            return "planner"
-        # If it's the first major failure, try meditation
-        return "meditator"
-
-    # Priority 2: Failure count-based routing
-    if fail_count == 2:
-        return "meditator"
-    
-
-    # If everything is fine, proceed to create the skill
-    return "skill_creation"
-
-
+# --- 2. Research & Meditation (Your existing logic) ---
 workflow.add_conditional_edges(
     "research",
     route_after_research,
     {
         "skill_creation": "skill_creation",
         "meditator": "meditator",
-        "planner": "planner" # Research sets a 'maximum retries reached' message here
+        "planner": "planner" 
     }
 )
 
-# 3. Meditation Routing
 workflow.add_conditional_edges(
     "meditator",
-    lambda state: "planner" if not state.get("is_terminal") else "conversational",
+    lambda state: "planner" if not state.get("is_terminal") else "memory_save", # Route to save before end
     {
         "planner": "planner",
-        "conversational": "conversational"
+        "memory_save": "memory_save"
     }
 )
 
-# --- Existing Edges ---
-workflow.add_conditional_edges("planner", route_after_plan, {"skill_creation": "skill_creation", "research": "research", END: END})
+# --- 3. UPDATED EXIT LOGIC: Save before END ---
+# Replace END with "memory_save" in all final steps
+
+def route_after_plan(state: NaviState):
+    plan = state.get("plan", [])
+    if plan and "EXIT" in str(plan[-1]).upper():
+        return "memory_save" # Redirect from END to memory_save
+    # ... your existing logic for research/skill_creation
+    return "skill_creation" # placeholder
+
+workflow.add_conditional_edges(
+    "planner", 
+    route_after_plan, 
+    {
+        "skill_creation": "skill_creation", 
+        "research": "research", 
+        "memory_save": "memory_save" # Now points here instead of END
+    }
+)
+
 workflow.add_edge("skill_creation", "executor")
 workflow.add_conditional_edges("executor", route_after_execution, {"planner": "planner"})
-workflow.add_edge("conversational", END)
+
+# Conversational also needs to remember what it said
+workflow.add_edge("conversational", "memory_save")
+
+# --- 4. THE FINAL TERMINATION ---
+workflow.add_edge("memory_save", END)
 
 # Compile
 navi_app = workflow.compile(checkpointer=MemorySaver())
