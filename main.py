@@ -63,21 +63,11 @@ def render_sidebar():
         st.markdown("---")
         st.subheader("💡 Example Prompts")
         example_prompts = [
-            """We are researching a market entry into Japan for a luxury skincare line.
+            """Execute a market entry analysis for a luxury skincare launch in Japan. First, search for the current USD to JPY exchange rate and the average retail price for a high-end luxury face cream at major Tokyo department stores (like Mitsukoshi or Isetan).
 
-            Web Intelligence: > - Find the current exchange rate for USD to JPY (Assume 150.0 if blocked). Search for the 'Average Price of a Luxury Face Cream in Tokyo' (Assume ¥25,000 if blocked).
+            Once you have the data, perform a sensitivity analysis: If our production cost is $40 USD per unit, create a heatmap showing our profit per unit in USD. The Y-Axis should represent the Exchange Rate (ranging from 135.0 to 165.0) and the X-Axis should represent the Local Sale Price in JPY (ranging from ¥20,000 to ¥30,000).
 
-            The Optimization Skill: Write a script to: Convert that Tokyo price to USD using the real-time rate you found.
-
-            Simulate a Sensitivity Analysis: How much profit do we make per unit if our manufacturing cost is $40 USD, but the Yen fluctuates by +/- 10%?
-
-            Create and display a Heatmap showing Profit per unit based on:
-
-            Y-Axis: Exchange Rate (135.0 to 165.0)
-
-            X-Axis: Local Sale Price in JPY (¥20,000 to ¥30,000)
-
-            Cultural Synthesis: Based on your research, suggest 3 'J-Beauty' trends we should incorporate into our marketing to appeal to Ginza shoppers.""", """Run a 12-month Monte Carlo simulation (1,000 trials) for a B2B SaaS startup.
+            Finally, scrape recent articles on 'J-Beauty trends 2024-2025' and synthesize 3 specific marketing angles tailored for Ginza shoppers, incorporating traditional ingredients or rituals found in your research.""", """Run a 12-month Monte Carlo simulation (1,000 trials) for a B2B SaaS startup.
             Parameters: > 1. Initial Burn: $150k starting capital.
             2. Revenue: $100 Monthly ARPU (Average Revenue Per User).
             3. Acquisition: Normal distribution (Mean=40, StdDev=10) new customers/mo.
