@@ -185,15 +185,18 @@ async def universal_scraper(url, task_query, max_depth=1, fields=None, label_con
         async with async_playwright() as p:
             # Launch with all necessary flags for Streamlit stability
             browser = await p.chromium.launch(
-                executable_path=get_executable_path(),
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                    "--single-process"
-                ]
-            )
+            executable_path=get_executable_path(),
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",  # CRITICAL: Forces use of /tmp instead of memory
+                "--disable-gpu",            # No hardware acceleration in the cloud
+                "--single-process",         # Keeps everything in one PID for Streamlit
+                "--no-zygote",              # Prevents spare "fork" processes
+                "--disable-extensions"      # Strips overhead
+            ]
+        )
             
             context = await browser.new_context(
                 user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
