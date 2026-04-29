@@ -22,6 +22,7 @@ playwright
 duckduckgo-search
 requests
 asyncio
+nest_asyncio
 
 # --- Processing ---
 pydantic

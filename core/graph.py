@@ -28,6 +28,31 @@ def install_package(package):
     except metadata.PackageNotFoundError:
         # Only install if missing
         subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+        
+import asyncio
+import nest_asyncio
+import inspect
+
+# 1. Apply the "re-entry" patch immediately
+nest_asyncio.apply()
+
+# 2. Define the Bridge once
+def run_sync_scraper(fn, *args, **kwargs):
+    """Global bridge for sync/async execution."""
+    if not inspect.iscoroutinefunction(fn):
+        res = fn(*args, **kwargs)
+        # Handle cases where a sync function returns a coroutine
+        if inspect.iscoroutine(res):
+            return asyncio.get_event_loop().run_until_complete(res)
+        return res
+
+    try:
+        loop = asyncio.get_event_loop()
+        return loop.run_until_complete(fn(*args, **kwargs))
+    except RuntimeError:
+        return asyncio.run(fn(*args, **kwargs))
+    
+    
 
 def get_skill_name(task_description: str) -> str:
     """Uses the pro LLM to generate a creative, snake_case codename."""
@@ -424,13 +449,14 @@ def universal_interpreter(recipe, scraper_fn):
                 logs.append(f"🔍 Search required for: {query}")
                 continue
             
-            # Pass all 5 arguments so the Scraper knows exactly what to do
-            raw_payload = scraper_fn(
+
+            raw_payload = run_sync_scraper(
+                scraper_fn,
                 url.split('#')[0], 
                 params.get('task_query', 'Extract details'),
-                params.get('max_depth', 0),           # The 3rd param (already in your signature)
-                fields=params.get('fields', []),      # The 4th param (The Ghost Buster)
-                label_context=params.get('label', '') # The 5th param (The Source Tagger)
+                params.get('max_depth', 0),
+                fields=params.get('fields', []),
+                label_context=params.get('label', '')
             )
             new_items = parse_markdown_content(raw_payload, params.get('fields', []), label)
             
@@ -1109,9 +1135,9 @@ def executor_node(state: NaviState):
         try:
             print("🧩 Detected JSON Recipe. Routing to Universal Interpreter...")
             recipe = json.loads(code)
-            
+            import asyncio
             # Execute
-            results = universal_interpreter(recipe, universal_scraper)
+            results = run_sync_scraper(universal_interpreter, recipe, universal_scraper)
             
             # ✅ CORRECT MAPPING:
             # The interpreter now returns 'final_answer', 'image_payload', and 'execution_logs'
@@ -1144,8 +1170,19 @@ def executor_node(state: NaviState):
 
     # --- PATH B: LEGACY PYTHON SUBPROCESS (For raw code generation) ---
     import inspect
+    import asyncio
+
     try:
+        # This still gets the source, but it will now start with "async def..."
         scraper_code = inspect.getsource(universal_scraper)
+        
+        # We append a 'wrapper' to the scraper_code so that the 
+        # generated script knows how to run the async function
+        scraper_code += """
+    def sync_wrapper(*args, **kwargs):
+        import asyncio
+        return asyncio.run(universal_scraper(*args, **kwargs))
+    """
     except Exception as e:
         print(f"⚠️ Warning: Could not find universal_scraper source: {e}")
         scraper_code = "def universal_scraper(url): return 'Error: Scraper source missing.'"
