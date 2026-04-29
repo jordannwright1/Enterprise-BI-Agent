@@ -625,11 +625,11 @@ def ensure_packages(package_list):
                 if package.lower() == "playwright":
                     print("🚀 Forcing Playwright Browser into local project folder...")
                     # This path is relative to your root /mount/src/enterprise-bi-agent/
-                    local_browser_path = os.path.join(os.getcwd(), ".playwright_bins")
+                    local_browser_path = os.path.join(os.getcwd(), "pw-browsers")
                     os.makedirs(local_browser_path, exist_ok=True)
     
                     env = os.environ.copy()
-                    env["PLAYWRIGHT_BROWSERS_PATH"] = local_browser_path
+                    env["PLAYWRIGHT_BROWSERS_PATH"] = os.path.join(os.getcwd(), "pw-browsers")
     
                     subprocess.check_call(
                     [sys.executable, "-m", "playwright", "install", "chromium"], 
