@@ -19,6 +19,7 @@ lxml
 pandas
 numpy
 matplotlib
+duckduckgo-search
 # Utilities
 python-dotenv
 rich
