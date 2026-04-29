@@ -291,12 +291,7 @@ def universal_scraper(url, task_query, max_depth=1, fields=None, label_context=N
         return {"mode": "error", "data": f"Critical Error: {str(e)}\n{traceback.format_exc()}"}
             
                          
-import re
-import json
-import pandas as pd
-import matplotlib.pyplot as plt
-import io
-import base64
+
 
 def universal_interpreter(recipe, scraper_fn):
     """
