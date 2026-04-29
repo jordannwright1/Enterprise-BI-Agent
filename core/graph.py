@@ -30,30 +30,32 @@ def install_package(package):
         subprocess.check_call([sys.executable, "-m", "pip", "install", package])
         
 import asyncio
-import nest_asyncio
 import inspect
+import nest_asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 def run_sync_scraper(fn, *args, **kwargs):
     nest_asyncio.apply()
+    
     try:
         loop = asyncio.get_event_loop()
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
     
-    # Logic to handle if we passed a function or a coroutine
+    # Generate the coroutine if it's an async function
     if inspect.iscoroutinefunction(fn):
         coro = fn(*args, **kwargs)
     elif inspect.iscoroutine(fn):
         coro = fn
     else:
-        # It's a regular sync function, just return it
         return fn(*args, **kwargs)
 
-    # If the loop is already running, we can't use run_until_complete
+    # --- THE STREAMLIT FIX ---
     if loop.is_running():
-        # Use a task instead
-        return asyncio.ensure_future(coro)
+        with ThreadPoolExecutor() as executor:
+            future = executor.submit(asyncio.run, coro)
+            return future.result()
     
     return loop.run_until_complete(coro)
 
@@ -136,40 +138,76 @@ def save_memory_node(state: NaviState):
         
     return {}
 
+base_pw_path = "/mount/src/bi-agent-v2/pw-browsers" if os.path.exists("/mount/src/bi-agent-v2") else os.path.join(os.getcwd(), "pw-browsers")
 
-def universal_scraper(url, task_query, max_depth=1, fields=None, label_context=None):
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = base_pw_path
+import platform
+def get_executable_path():
+    if platform.system() == "Darwin":  # Mac
+        return os.path.join(base_pw_path, "chromium_headless_shell-1217/chrome-headless-shell-mac-arm64/chrome-headless-shell")
+    else:  # Linux (Streamlit)
+        return os.path.join(base_pw_path, "chromium_headless_shell-1217/chrome-headless-shell-linux64/chrome-headless-shell")
+
+
+import os
+import platform
+import asyncio
+import json
+import re
+import traceback
+from collections import Counter
+
+# --- HELPER: CROSS-PLATFORM PATHS ---
+base_pw_path = "/mount/src/bi-agent-v2/pw-browsers" if os.path.exists("/mount/src/bi-agent-v2") else os.path.join(os.getcwd(), "pw-browsers")
+
+def get_executable_path():
+    """Returns the correct binary path based on the operating system."""
+    if platform.system() == "Darwin":  # Mac
+        return os.path.join(base_pw_path, "chromium_headless_shell-1217/chrome-headless-shell-mac-arm64/chrome-headless-shell")
+    else:  # Linux (Streamlit)
+        return os.path.join(base_pw_path, "chromium_headless_shell-1217/chrome-headless-shell-linux64/chrome-headless-shell")
+
+# --- MAIN ASYNC FUNCTION ---
+async def universal_scraper(url, task_query, max_depth=1, fields=None, label_context=None):
     from bs4 import BeautifulSoup
-    import json, re, traceback
-    from collections import Counter
-    from playwright.sync_api import sync_playwright
+    from playwright.async_api import async_playwright
     
     result = {"mode": "structured_blocks", "status": "initializing", "data": ""}
-    import os
-    browser_path = "/mount/src/bi-agent-v2/pw-browsers"
-    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = browser_path
+    
+    # Ensure Playwright knows where our custom install folder is
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = base_pw_path
+    
     try:
         target_url = url.strip()
-        if not target_url.startswith('http'): target_url = 'https://' + target_url
+        if not target_url.startswith('http'): 
+            target_url = 'https://' + target_url
         
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True,
-            args=[
-            "--no-sandbox",
-            "--disable-setuid-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-gpu"  # Servers don't have GPUs, this saves memory
-            ]
-                                        
-        )
-            page = browser.new_page(user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36')
-            print(f"[RECON] Landing: {target_url}")
-            page.goto(target_url, wait_until='domcontentloaded', timeout=30000)
+        async with async_playwright() as p:
+            # Launch with all necessary flags for Streamlit stability
+            browser = await p.chromium.launch(
+                executable_path=get_executable_path(),
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--single-process"
+                ]
+            )
             
-            # --- PHASE 0: INCREMENTAL SCROLL (Defeat Lazy-Loading) ---
+            context = await browser.new_context(
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
+            )
+            page = await context.new_page()
+            
+            print(f"[RECON] Landing: {target_url}")
+            await page.goto(target_url, wait_until='domcontentloaded', timeout=30000)
+            
+            # --- PHASE 0: INCREMENTAL SCROLL ---
             print("[SCROLL] Activating lazy-loaded content...")
             for _ in range(5):
-                page.evaluate("window.scrollBy(0, 800)")
-                page.wait_for_timeout(1200)
+                await page.evaluate("window.scrollBy(0, 800)")
+                await page.wait_for_timeout(1200)
             
             raw_data, seen = [], set()
             current_depth = 0
@@ -179,10 +217,13 @@ def universal_scraper(url, task_query, max_depth=1, fields=None, label_context=N
             price_rex = re.compile(r'\$\d+(?:\.\d{2})?')
 
             while current_depth <= max_depth:
-                page.wait_for_timeout(2000)
-                soup = BeautifulSoup(page.content(), 'html.parser')
+                await page.wait_for_timeout(2000)
+                html_content = await page.content()
+                soup = BeautifulSoup(html_content, 'html.parser')
+                
                 # Clean structural fluff
-                for nt in soup.find_all(['nav', 'footer', 'aside', 'script', 'style']): nt.decompose()
+                for nt in soup.find_all(['nav', 'footer', 'aside', 'script', 'style']): 
+                    nt.decompose()
 
                 # --- PHASE 1: TEXT-INWARD SCANNING ---
                 text_node_scores = []
@@ -200,7 +241,7 @@ def universal_scraper(url, task_query, max_depth=1, fields=None, label_context=N
                     if score > 10:
                         text_node_scores.append({"tag": tag, "score": score})
 
-                # --- REFINED PHASE 2: BUBBLE-UP WITH CAROUSEL BYPASS ---
+                # --- PHASE 2: BUBBLE-UP ---
                 parent_class_counter = Counter()
                 for entry in text_node_scores:
                     curr = entry['tag']
@@ -221,22 +262,20 @@ def universal_scraper(url, task_query, max_depth=1, fields=None, label_context=N
 
                 potential_selectors = parent_class_counter.most_common(5)
                 best_selector = potential_selectors[0][0] if potential_selectors else ".sku-item"
-                
                 print(f"[TRACE] Depth {current_depth} Winner Selector: {best_selector}")
 
                 # --- PHASE 3: SEMANTIC EXTRACTION ---
-                items = page.query_selector_all(best_selector)
+                items = await page.query_selector_all(best_selector)
                 for item in items:
                     if len(raw_data) >= 15: break
                     
-                    inner_text_lines = [t.strip() for t in item.inner_text().split('\n') if t.strip()]
+                    raw_inner_text = await item.inner_text()
+                    inner_text_lines = [t.strip() for t in raw_inner_text.split('\n') if t.strip()]
                     if not inner_text_lines: continue
 
-                    # 1. Product Name Logic (Title)
                     potential_titles = inner_text_lines[:6]
                     title = max(potential_titles, key=len) if potential_titles else "N/A"
                     
-                    # 2. Price Logic
                     price = "N/A"
                     for line in inner_text_lines:
                         match = price_rex.search(line)
@@ -244,37 +283,23 @@ def universal_scraper(url, task_query, max_depth=1, fields=None, label_context=N
                             price = match.group()
                             break
                     
-                    # 3. Savings Logic (Deals)
                     savings = "N/A"
                     for line in inner_text_lines:
                         if "Save" in line:
                             savings = line
                             break
 
-                    # --- DYNAMIC MAPPING (The Fix) ---
                     if len(title) > 20 and not noise_rex.search(title) and title.lower() not in seen:
-                        # 1. Access local scope variables (or use defaults if undefined)
-                        # We try to get 'fields' and 'label_context' from the function arguments
-                        try:
-                            active_fields = fields if 'fields' in locals() and fields else ["Product Name", "Price", "Deals"]
-                            active_label = label_context if 'label_context' in locals() else ""
-                        except NameError:
-                            active_fields = ["Product Name", "Price", "Deals"]
-                            active_label = ""
+                        active_fields = fields if fields else ["Product Name", "Price", "Deals"]
+                        active_label = label_context if label_context else ""
 
                         entry = {}
-                        
-                        # 2. Tag with the source label if provided
-                        if active_label:
-                            entry["context_source"] = active_label
+                        if active_label: entry["context_source"] = active_label
 
-                        # 3. Map the extracted data to the keys provided in 'fields'
-                        # First field = Title, Second = Price, Third = Deals
                         if len(active_fields) >= 1: entry[active_fields[0]] = title
                         if len(active_fields) >= 2: entry[active_fields[1]] = price
                         if len(active_fields) >= 3: entry[active_fields[2]] = savings
                         
-                        # Fill any extra field requests with N/A
                         for extra in active_fields[3:]:
                             entry[extra] = "N/A"
 
@@ -285,33 +310,27 @@ def universal_scraper(url, task_query, max_depth=1, fields=None, label_context=N
 
                 # --- PHASE 4: NAVIGATION ---
                 if current_depth < max_depth and len(raw_data) < 10:
-                    next_btn = page.query_selector('a[rel="next"], button:has-text("Next"), .pagination__next')
+                    next_btn = await page.query_selector('a[rel="next"], button:has-text("Next"), .pagination__next')
                     if next_btn:
-                        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                        next_btn.evaluate("el => el.click()")
-                        current_depth += 1
+                        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                        await next_btn.evaluate("el => el.click()")
                     else: break
                 else: break
 
-            browser.close()
+            await browser.close()
 
         if not raw_data:
             return {"mode": "error", "data": f"No products extracted from {best_selector}. Selector might be too broad."}
 
         # Build Markdown Table
-        # 1. Dynamically identify headers from the local raw_data list
         dynamic_keys = []
-        if raw_data and isinstance(raw_data, list):
+        if raw_data:
             for item in raw_data:
-                if isinstance(item, dict):
-                    for k in item.keys():
-                        if k not in dynamic_keys and k not in ["source_label", "context_source"]:
-                            dynamic_keys.append(k)
+                for k in item.keys():
+                    if k not in dynamic_keys and k not in ["context_source"]:
+                        dynamic_keys.append(k)
         
-        # 2. Fallback to your original headers if no keys are found
         headers = dynamic_keys if dynamic_keys else ["Product Name", "Price", "Deals"]
-        
-        # 3. Standard table initialization using the derived headers
         table = ["| " + " | ".join([h.replace('_', ' ').title() for h in headers]) + " |", 
                  "| " + " | ".join([":---"] * len(headers)) + " |"]
         for r in raw_data:
@@ -321,8 +340,7 @@ def universal_scraper(url, task_query, max_depth=1, fields=None, label_context=N
         return result
 
     except Exception as e:
-        return {"mode": "error", "data": f"Critical Error: {str(e)}\n{traceback.format_exc()}"}
-            
+        return {"mode": "error", "data": f"Critical Error: {str(e)}\n{traceback.format_exc()}"}            
                          
 
 
@@ -610,13 +628,28 @@ import subprocess
 import sys
 import os
 
+import os
+import sys
+import subprocess
+import platform
+
 def ensure_packages(package_list):
-    """Installs missing packages safely and handles Playwright's binary requirements."""
+    """
+    Installs missing packages safely and handles Playwright's binary requirements.
+    Optimized for Streamlit Cloud (/mount/src/...) and Local environments.
+    """
     failed_packages = []
     
+    # 1. Determine the persistent browser path
+    # On Streamlit, we want a fixed path: /mount/src/bi-agent-v2/pw-browsers
+    # On Local, we use a 'pw-browsers' folder in your current directory
+    if os.path.exists("/mount/src/bi-agent-v2"):
+        base_pw_path = "/mount/src/bi-agent-v2/pw-browsers"
+    else:
+        base_pw_path = os.path.join(os.getcwd(), "pw-browsers")
+
     for package in package_list:
-        # Normalize the name for the __import__ check (e.g., 'beautifulsoup4' -> 'bs4')
-        # Note: This check is a bit naive for some packages, but works for most.
+        # Normalize the name for the __import__ check
         import_name = package.replace('-', '_')
         if package.lower() == "beautifulsoup4": import_name = "bs4"
         if package.lower() == "scikit-learn": import_name = "sklearn"
@@ -628,30 +661,31 @@ def ensure_packages(package_list):
         except ImportError:
             try:
                 print(f"📦 System: Installing missing dependency: {package}...")
-                # Standard pip install
                 subprocess.check_call([sys.executable, "-m", "pip", "install", package, "--quiet"])
                 
                 # --- THE PLAYWRIGHT SPECIAL CASE ---
                 if package.lower() == "playwright":
-                    print("🚀 Forcing Playwright Browser into local project folder...")
-                    # This path is relative to your root /mount/src/enterprise-bi-agent/
-                    local_browser_path = os.path.join(os.getcwd(), "pw-browsers")
-                    os.makedirs(local_browser_path, exist_ok=True)
+                    print(f"🚀 Initializing Playwright in: {base_pw_path}")
+                    os.makedirs(base_pw_path, exist_ok=True)
+                    
+                    # Update the current process environment immediately
+                    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = base_pw_path
     
                     env = os.environ.copy()
-                    env["PLAYWRIGHT_BROWSERS_PATH"] = os.path.join(os.getcwd(), "pw-browsers")
+                    env["PLAYWRIGHT_BROWSERS_PATH"] = base_pw_path
     
+                    # CRITICAL: Install chromium AND chromium-headless-shell
+                    # This ensures the shell binary exists for our scraper's specific pathing
+                    print("⬇️ Downloading Chromium & Headless Shell...")
                     subprocess.check_call(
-                    [sys.executable, "-m", "playwright", "install", "chromium"], 
-                    env=env
-                )
+                        [sys.executable, "-m", "playwright", "install", "chromium", "chromium-headless-shell"], 
+                        env=env
+                    )
+                    print("✅ Playwright binaries prepared.")
 
             except subprocess.CalledProcessError as e:
                 print(f"❌ System: Failed to install {package} (Exit code: {e.returncode})")
                 failed_packages.append(package)
-            except subprocess.TimeoutExpired:
-                print(f"⚠️ System: Playwright install timed out.")
-                failed_packages.append(f"{package} (timeout)")
             except Exception as e:
                 print(f"⚠️ System: Unexpected error installing {package}: {e}")
                 failed_packages.append(package)
@@ -790,14 +824,8 @@ def planner_node(state: NaviState):
         RAW SCRAPER OUTPUT:
         {final_ans_raw}
 
-        MANDATORY INTERPRETATION RULES:
-        1. THE "GOOD ENOUGH" RULE: If the primary information (e.g., the Quotes or Product Titles) is present in the data, the mission is a SUCCESS. 
-        2. FOOTNOTE SECONDARY MISSES: If secondary details (like 'Tags', 'Availability', or 'Dates') are missing from the scrape, DO NOT REJECT THE DATA. Instead, provide the primary data and add a brief note at the end: "Note: [Field] was not found in the current page structure."
-        3. CONTENT OVER KEYS: Ignore the fact that fields are named 'f1' or 'f2'. Look at the text. If 'f1' contains a quote and 'f2' contains a name, you have exactly what you need.
-        4. NO RECURSION: Do not ask for another cycle if the core answer is visible in the raw text. Your job is to clean it, not to complain about the scraper's formatting.
-        4. You shouldn't include anything about mandatory interpretation rules, raw scraper output, the target task, or anything other than the summarized data to the user.  Respond professionally and conversationally to the user.  
-        FINAL INSTRUCTION: 
-        Extract and summarize the data above. If you see the core answers, format them into a clean list or table and finalize the response now.
+        INSTRUCTION: 
+        Extract and summarize the data above. If you see the core answers, format them into a clean list or table and finalize the response now. Never output raw data directly, always summarize it first.
     """).content.strip()
 
         return {

@@ -23,6 +23,9 @@ import io
 import sys
 import subprocess
 import shutil
+from core.graph import ensure_packages  
+REQUIRED_PACKAGES = ["playwright", "beautifulsoup4", "pandas"]
+ensure_packages(REQUIRED_PACKAGES)
 
 
 # --- UTILITY FUNCTIONS ---
