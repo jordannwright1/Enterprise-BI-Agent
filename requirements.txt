@@ -18,7 +18,7 @@ lxml
 # Data Processing
 pandas
 numpy
-
+matplotlib
 # Utilities
 python-dotenv
 rich
