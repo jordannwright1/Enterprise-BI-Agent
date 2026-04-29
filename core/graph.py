@@ -207,7 +207,15 @@ def universal_scraper(url, task_query, max_depth=1, fields=None, label_context=N
             # Added flags for Streamlit Cloud stability
             browser = p.chromium.launch(
                 executable_path=exe_path,
-                headless=True
+                headless=True,
+                args=[
+                    "--no-sandbox",                # Essential for Linux containers
+                    "--disable-setuid-sandbox",     # Extra layer of sandbox bypass
+                    "--disable-dev-shm-usage",      # CRITICAL: Uses /tmp instead of /dev/shm (which is tiny on Streamlit)
+                    "--disable-gpu",                # Prevents trying to use hardware acceleration
+                    "--no-zygote",                  # Stops the browser from creating "zombie" processes
+                    "--single-process",             # Keeps everything in one thread (very important for Streamlit)
+                ]
             )
             
             page = browser.new_page(user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36')
