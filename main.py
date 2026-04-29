@@ -1,7 +1,8 @@
 import streamlit as st
 import asyncio
 import nest_asyncio
-
+import os
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/mount/src/bi-agent-v2/pw-browsers"
 try:
     loop = asyncio.get_event_loop()
 except RuntimeError:
@@ -9,7 +10,6 @@ except RuntimeError:
     asyncio.set_event_loop(loop)
 
 nest_asyncio.apply()
-import os
 from dotenv import load_dotenv
 import uuid
 from core.graph import navi_app
@@ -22,7 +22,6 @@ from PIL import Image
 import io
 import sys
 import subprocess
-import os
 import shutil
 
 
@@ -111,15 +110,6 @@ with col2:
 
 st.divider()
 
-# --- 1. CONFIGURATION & ENVIRONMENT ---
-ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-if ROOT_DIR not in sys.path:
-    sys.path.insert(0, ROOT_DIR)
-
-# Force Playwright to use a local folder within the Streamlit mount
-local_bins = os.path.join(ROOT_DIR, ".playwright_bins")
-os.environ["PLAYWRIGHT_BROWSERS_PATH"] = local_bins
-os.makedirs(local_bins, exist_ok=True)
 
 load_dotenv()
 init_db()
