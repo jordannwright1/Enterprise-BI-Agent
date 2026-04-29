@@ -218,7 +218,11 @@ def universal_scraper(url, task_query, max_depth=1, fields=None, label_context=N
                 ]
             )
             
-            page = browser.new_page(user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36')
+            # Use a fresh context with a standard desktop User Agent
+            context = browser.new_context(
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            )
+            page = context.new_page()
             print(f"[RECON] Landing: {target_url} using {exe_path}")
             
             page.goto(target_url, wait_until='domcontentloaded', timeout=30000)
