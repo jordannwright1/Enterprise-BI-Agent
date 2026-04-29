@@ -5,3 +5,4 @@ tools
 __pycache__/
 .playwright_bins
 pw-browsers
+diagnose.py

@@ -18,7 +18,7 @@ torchvision
 
 # --- Scraping & Search ---
 streamlit>=1.30.0
-playwright>=1.40.0
+playwright==1.40.0
 beautifulsoup4>=4.12.0
 duckduckgo-search
 
