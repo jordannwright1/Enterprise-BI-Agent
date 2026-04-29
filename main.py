@@ -58,20 +58,17 @@ def verify_installations():
         st.error(f"❌ Local browser folder is MISSING at: `{local_pw_path}`")
 
 def run_install():
-    """Runs the install command targeting a local project folder."""
-    st.info("🚀 Starting Local-Folder Playwright Installation...")
+    """Runs the install command for the exact headless-shell binary needed."""
+    st.info("🚀 Installing exact Playwright binaries...")
     
-    # Define the local path
     local_pw_path = os.path.join(os.getcwd(), "pw-browsers")
-    
-    # Set the environment variable for the subprocess
     custom_env = os.environ.copy()
     custom_env["PLAYWRIGHT_BROWSERS_PATH"] = local_pw_path
     
     try:
-        # We omit --with-deps to avoid the sudo/root password wall
+        # We add 'chromium-headless-shell' specifically to the list
         process = subprocess.Popen(
-            ["playwright", "install", "chromium"],
+            ["playwright", "install", "chromium", "chromium-headless-shell"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -86,14 +83,14 @@ def run_install():
             
         process.wait()
         if process.returncode == 0:
-            st.success(f"✅ Installation Finished! Browsers should be in: `{local_pw_path}`")
+            st.success("✅ Installation Finished! Shell binaries are now in place.")
             st.balloons()
         else:
-            st.error(f"❌ Installation failed with code {process.returncode}")
-            st.info("If this failed with a 'Read-only file system' error, Streamlit has locked the directory.")
+            st.error(f"❌ Failed with code {process.returncode}")
     except Exception as e:
         st.exception(e)
         
+                
 # --- STREAMLIT UI COMPONENTS ---
 
 st.title("🛠️ Navi System Diagnostics")
