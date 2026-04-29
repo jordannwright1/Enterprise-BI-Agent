@@ -1,15 +1,6 @@
 import streamlit as st
-import asyncio
-import nest_asyncio
 import os
 os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/mount/src/bi-agent-v2/pw-browsers"
-try:
-    loop = asyncio.get_event_loop()
-except RuntimeError:
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-nest_asyncio.apply()
 from dotenv import load_dotenv
 import uuid
 from core.graph import navi_app
