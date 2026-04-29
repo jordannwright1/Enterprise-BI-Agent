@@ -190,11 +190,13 @@ async def universal_scraper(url, task_query, max_depth=1, fields=None, label_con
             args=[
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",  # CRITICAL: Forces use of /tmp instead of memory
-                "--disable-gpu",            # No hardware acceleration in the cloud
-                "--single-process",         # Keeps everything in one PID for Streamlit
-                "--no-zygote",              # Prevents spare "fork" processes
-                "--disable-extensions"      # Strips overhead
+                "--disable-dev-shm-usage",  # Redirects memory to /tmp (The most important flag)
+                "--disable-gpu",            # Prevents GPU process crashes
+                "--single-process",         # Forces all browser logic into the main app process
+                "--no-zygote",              # Stops the browser from spawning a "helper" process
+                "--disable-extensions",      # Minimizes overhead
+                "--proxy-server='direct://'", # Skips proxy lookups
+                "--proxy-bypass-list=*"
             ]
         )
             
@@ -204,7 +206,7 @@ async def universal_scraper(url, task_query, max_depth=1, fields=None, label_con
             page = await context.new_page()
             
             print(f"[RECON] Landing: {target_url}")
-            await page.goto(target_url, wait_until='domcontentloaded', timeout=30000)
+            await page.goto(target_url, wait_until='networkidle', timeout=30000)
             
             # --- PHASE 0: INCREMENTAL SCROLL ---
             print("[SCROLL] Activating lazy-loaded content...")
