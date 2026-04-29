@@ -789,24 +789,15 @@ def planner_node(state: NaviState):
     if final_ans_raw:
         print(f"🧐 Planner: Auditing Cycle {retry_count}...")
         print(final_ans_raw)
-        # Check if the data is actually empty or just a "No Results" message
-        is_actually_empty = any(x in str(final_ans_raw).lower() for x in ["no matching items", "no data", "not found", "[]", "{}"])
         
         audit_prompt = f"""
         ### OBJECTIVE: {task}
         ### DATA PAYLOAD: {str(final_ans_raw)[:5000]}
         
-        ### CRITICAL INSTRUCTION:
-        You are a Semantic Data Auditor. Your job is NOT to grade the formatting, but to verify if the 'Gold' (the actual requested information) is present in the text.
-        
-        **SEMANTIC COMPLETENESS**: If the requested information is "there or mostly there," even if it is mixed with noise or incomplete fragments, you MUST accept it. 
-        **FORMAT AGNOSTIC**: Do not reject the data because it is in a list, a messy JSON, or a broken table. Content is king.
-
-        ### DECISION LOGIC:
-        -If the information is found in the content of the {final_ans_raw} you MUST respond COMPLETE.  It is up to you to find this information even if it's buried in the text.  READ through ALL of the text in {final_ans_raw} before your response and if data is present you MUST respond COMPLETE
-        - ONLY respond with CONTINUE if the data is genuinely empty, 100% unrelated (e.g., only captured the footer), or a "403 Forbidden" error. If there is data you MUST respond with COMPLETE
-
-        Respond with your brief analysis, then end with exactly one word: COMPLETE or CONTINUE.
+        Review the current data vs the target task.
+        If the task is satisfied OR if the information the user requires is found in the data: Output ONLY the word 'COMPLETE'.
+        Output ONLY the word 'CONTINUE' if no data is present.  If there is ANY data that pertains to the task you MUST respond COMPLETE.
+        Do not provide explanations or conversational filler.
         """
         
         audit_raw = llm_fast.invoke(audit_prompt).content.strip()
@@ -843,14 +834,16 @@ def planner_node(state: NaviState):
         print("✨ Planner: Logic satisfied. Synthesizing final response.")
         # (Rest of your synthesis logic remains the same...)
         summary_response = llm_fast.invoke(f"""
-        MISSION CRITICAL DATA RECONSTRUCTION:
-        Target Task: '{task}'
+        ### ROLE: EXPERT DATA ANALYST
+        ### OBJECTIVE: RECONSTRUCT MISSION-CRITICAL DATA
         
-        RAW SCRAPER OUTPUT:
-        {final_ans_raw}
+        TASK: {task}
+        
+        ### RAW SCRAPER DATA (FOR ANALYSIS ONLY):
+        {final_ans_raw[:8000]}  # Truncate to prevent context overflow
 
-        INSTRUCTION: 
-        Extract and summarize the data above. If you see the core answers, format them into a clean list or table and finalize the response now. NEVER output raw data directly, ALWAYS summarize it first.
+        Based on the task and the given data, you MUST parse through the text content of the raw output and SUMMARIZE the information you find.  Do NOT EVER output raw data to the user.  Return a conversational summary in a professsional manner.
+
     """).content.strip()
 
         return {
@@ -1170,178 +1163,111 @@ Generate a JSON execution recipe to fulfill: {task}
 
 # --- Node 3: Executor ---
 import json
+import traceback
+import io
 import re
-import os
-import subprocess
-import tempfile
-import textwrap
-import sys
+from contextlib import redirect_stdout
 
 def executor_node(state: NaviState):
-    print("\n🚀 [SUBPROCESS] Starting Lite Execution...")
+    """
+    DOCKER-NATIVE EXECUTOR
+    Preserves all extraction logic and image payload processing while
+    eliminating subprocess overhead and pathing conflicts.
+    """
+    print("\n🚀 [EXECUTOR] Running Docker-Native Logic...")
     
-    # This ensures even if the key is None, it defaults to an empty string BEFORE stripping
     code = (state.get('generated_tool_code') or "").strip()
-    print(f"DEBUG B: Executor received: {type(code)} | Value: {code[:100]}...") # Truncated print for readability
-    
-    packages = state.get('packages', []) 
     retry_count = state.get('retry_count', 0)
     current_plan = state.get('plan', [])
-    task = state.get("task")
     
     if not code:
         return {
             "last_error": "### ❌ Execution Failed\nNo code or recipe found.",
             "retry_count": retry_count + 1,
-            "plan": current_plan + ["### ❌ No Logic to Execute"],
-            "generated_tool_code": "" 
+            "plan": current_plan + ["### ❌ No Logic to Execute"]
         }
 
     # --- PATH A: UNIVERSAL RECIPE INTERPRETER (JSON) ---
     if code.startswith("[") and code.endswith("]"):
         try:
-            print("🧩 Detected JSON Recipe. Routing to Universal Interpreter...")
+            print("🧩 Executing JSON Recipe...")
             recipe = json.loads(code)
-            
-            # Execute
             results = universal_interpreter(recipe, universal_scraper)
             
-            # ✅ CORRECT MAPPING:
-            # The interpreter now returns 'final_answer', 'image_payload', and 'execution_logs'
-            final_text_result = results.get('final_answer', '{}')
-            image_payloads = results.get('image_payload', [])
-            logs = results.get('execution_logs', "")
-
             return {
-                "final_answer": final_text_result,
-                "image_payload": image_payloads, 
+                "final_answer": results.get('final_answer', '{}'),
+                "image_payload": results.get('image_payload', []), 
                 "last_error": None,
-                "executor_logs": logs,
+                "executor_logs": results.get('execution_logs', ""),
                 "retry_count": retry_count,
                 "generated_tool_code": code,  
                 "plan": current_plan + ["### ✅ Recipe Execution Success"]
             }
-        
-        except Exception as e:
-            import traceback
-            # This will print the EXACT line number and error type in your terminal
-            print(f"❌ INTERPRETER CRASHED: {traceback.format_exc()}") 
-            
+        except Exception:
             return {
-                "last_error": f"### ❌ Recipe Interpreter Error\n{str(e)}",
+                "last_error": f"### ❌ Recipe Interpreter Error",
                 "executor_logs": traceback.format_exc(),
                 "retry_count": retry_count + 1,
-                "generated_tool_code": code, 
-                "plan": current_plan + [f"### ❌ Recipe Failed: {str(e)}"]
+                "plan": current_plan + ["### ❌ Recipe Failed"]
             }
 
-    # --- PATH B: LEGACY PYTHON SUBPROCESS (For raw code generation) ---
-    import inspect
+    # --- PATH B: NATIVE PYTHON EXECUTION ---
+    print("🐍 Executing Python Logic and Data Viz Extraction...")
     
+    # Define the namespace for the LLM-generated code
+    # We pass tools directly so the container doesn't have to re-import
+    exec_namespace = {
+        "universal_scraper": universal_scraper,
+        "json": json,
+        "re": re,
+        "result": None # Variable for LLM to assign final strings/data
+    }
 
+    stdout_capture = io.StringIO()
     try:
-       
-        scraper_code = inspect.getsource(universal_scraper)
+        # Capture prints and execute
+        with redirect_stdout(stdout_capture):
+            exec(code, exec_namespace)
         
-    except Exception as e:
-        print(f"⚠️ Warning: Could not find universal_scraper source: {e}")
-        scraper_code = "def universal_scraper(url): return 'Error: Scraper source missing.'"
-
-    raw_script = f"""
-import sys
-import io
-import json
-import re
-import os
-import base64
-
-# Force UTF-8
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
-
-# --- INJECTED UTILITIES ---
-{scraper_code}
-
-# --- NAVI GENERATED CODE ---
-{code}
-
-if __name__ == "__main__":
-    try:
-        if 'execute_tool' not in globals():
-            sys.stdout.write("EXECUTION_ERROR: Function 'execute_tool' not defined in generated code.\\n")
-        else:
-            result = execute_tool()
-            output = str(result) if result is not None else "NAVI_EMPTY_RESULT"
-            sys.stdout.write("\\n---NAVI_RESULT_START---\\n")
-            sys.stdout.write(output)
-            sys.stdout.write("\\n---NAVI_RESULT_END---\\n")
-    except Exception as e:
-        sys.stdout.write(f"EXECUTION_ERROR: {{e}}\\n")
-"""
-
-    full_script = textwrap.dedent(raw_script).strip()
-
-    # Dynamic Package Installation Logic
-    internal_tools = ["universal_scraper", "ddgs_search", "NaviState"] 
-    filtered_packages = [p for p in packages if p not in internal_tools]
-    if filtered_packages:
-        for pkg in filtered_packages:
-            try:
-                subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "--quiet"])
-            except: pass
-
-    temp_path = ""
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".py", delete=False, mode='w', encoding='utf-8') as f:
-            f.write(full_script)
-            temp_path = f.name
-
-        env_vars = {**os.environ, "PYTHONIOENCODING": "utf-8"}
-        process = subprocess.run([sys.executable, temp_path], capture_output=True, text=True, timeout=120, env=env_vars)
+        # 1. Gather raw text from result variable or stdout
+        raw_output = str(exec_namespace.get('result') or stdout_capture.getvalue() or "")
         
-        output_cleaned = process.stdout + "\n" + process.stderr
-        output_cleaned = re.sub(r"\[notice\].*?|WARNING: Running pip.*?", "", output_cleaned).strip()
-
-        print(f"\n{'='*20} SUBPROCESS LOGS {'='*20}\n{output_cleaned}\n{'='*48}")
-
-        match = re.search(r"---NAVI_RESULT_START---\s*(.*?)\s*---NAVI_RESULT_END---", output_cleaned, re.DOTALL)
+        # 2. IMAGE RECONSTRUCTION LOGIC (Preserved from Subprocess version)
+        image_payloads = []
+        # Standard base64 pattern for PNG/DataViz
+        b64_pattern = r"(iVBORw0KGgoAAAANSUhEUg[A-Za-z0-9\+/=\s\n]+)"
+        all_figs = re.findall(b64_pattern, raw_output)
         
-        if match:
-            extracted_data = match.group(1).strip()
+        clean_for_llm = raw_output
+        # Truncate if massive (Safety for LLM context)
+        if len(clean_for_llm) > 5000:
+            clean_for_llm = f"{clean_for_llm[:2500]}\n\n... [TRUNCATED] ...\n\n{clean_for_llm[-2500:]}"
             
-            image_payloads = []
-            b64_pattern = r"(iVBORw0KGgoAAAANSUhEUg[A-Za-z0-9\+/=\s\n]+)"
-            all_figs = re.findall(b64_pattern, extracted_data)
-            
-            clean_for_llm = extracted_data
-            if len(clean_for_llm) > 5000:
-                clean_for_llm = f"{clean_for_llm[:2500]}\n\n... [TRUNCATED] ...\n\n{clean_for_llm[-2500:]}"
-            for idx, fig_raw in enumerate(all_figs):
-                image_data_clean = re.sub(r"[^A-Za-z0-9\+/=]", "", fig_raw)
-                image_payloads.append(image_data_clean)
-                clean_for_llm = clean_for_llm.replace(fig_raw, f"\n\n[IMAGE_DATA_HIDDEN_{idx}]\n\n")
-            
-            return {
-                "final_answer": clean_for_llm,
-                "image_payload": image_payloads,
-                "last_error": None,
-                "executor_logs": output_cleaned,
-                "retry_count": retry_count,
-                "generated_tool_code": code, 
-                "plan": current_plan + ["### ✅ Legacy Code Success"]
-            }
+        for idx, fig_raw in enumerate(all_figs):
+            # Clean non-b64 characters and extract
+            image_data_clean = re.sub(r"[^A-Za-z0-9\+/=]", "", fig_raw)
+            image_payloads.append(image_data_clean)
+            # Replace the massive string with a placeholder so the LLM doesn't choke
+            clean_for_llm = clean_for_llm.replace(fig_raw, f"\n\n[IMAGE_DATA_HIDDEN_{idx}]\n\n")
 
         return {
-            "last_error": f"### ❌ Execution Failed\n{output_cleaned[-500:]}",
-            "executor_logs": output_cleaned,
-            "retry_count": retry_count + 1,
+            "final_answer": clean_for_llm,
+            "image_payload": image_payloads,
+            "last_error": None,
+            "executor_logs": stdout_capture.getvalue(),
+            "retry_count": retry_count,
             "generated_tool_code": code, 
-            "plan": current_plan + ["### ❌ Code Failed"]
+            "plan": current_plan + ["### ✅ Native Execution Success"]
         }
 
-    finally:
-        if temp_path and os.path.exists(temp_path):
-            os.remove(temp_path)
-
+    except Exception:
+        return {
+            "last_error": "### ❌ Python Runtime Error",
+            "executor_logs": traceback.format_exc(),
+            "retry_count": retry_count + 1,
+            "plan": current_plan + ["### ❌ Runtime Crash"]
+        }
+        
 
 # --- Node 4: Human-in-the-Loop ---
 def human_gate_node(state: NaviState):
