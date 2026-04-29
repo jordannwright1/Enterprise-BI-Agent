@@ -31,13 +31,22 @@ def install_package(package):
         
 import asyncio
 import nest_asyncio
+import inspect
 
 def run_sync_scraper(fn, *args, **kwargs):
-    """Stable bridge for Python 3.12."""
     nest_asyncio.apply()
-    loop = asyncio.get_event_loop()
-    return loop.run_until_complete(fn(*args, **kwargs))    
     
+    # Check if we were passed a coroutine object instead of a function
+    if inspect.iscoroutine(fn):
+        return asyncio.get_event_loop().run_until_complete(fn)
+    
+    # If it's a function, call it to get the coroutine
+    if inspect.iscoroutinefunction(fn):
+        coro = fn(*args, **kwargs)
+        return asyncio.get_event_loop().run_until_complete(coro)
+    
+    # Fallback for standard synchronous functions
+    return fn(*args, **kwargs)    
 
 def get_skill_name(task_description: str) -> str:
     """Uses the pro LLM to generate a creative, snake_case codename."""
