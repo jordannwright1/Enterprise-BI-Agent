@@ -17,12 +17,12 @@ pinecone
 torchvision
 
 # --- Scraping & Search ---
-beautifulsoup4
-playwright
+streamlit>=1.30.0
+playwright>=1.40.0
+beautifulsoup4>=4.12.0
+nest_asyncio>=1.5.8
+anyio>=4.0.0
 duckduckgo-search
-requests
-asyncio
-nest_asyncio
 
 # --- Processing ---
 pydantic

@@ -30,27 +30,29 @@ def install_package(package):
         subprocess.check_call([sys.executable, "-m", "pip", "install", package])
         
 import asyncio
-import nest_asyncio
-import inspect
+from concurrent.futures import ThreadPoolExecutor
 
-# 1. Apply the "re-entry" patch immediately
-nest_asyncio.apply()
-
-# 2. Define the Bridge once
 def run_sync_scraper(fn, *args, **kwargs):
-    """Global bridge for sync/async execution."""
-    if not inspect.iscoroutinefunction(fn):
-        res = fn(*args, **kwargs)
-        # Handle cases where a sync function returns a coroutine
-        if inspect.iscoroutine(res):
-            return asyncio.get_event_loop().run_until_complete(res)
-        return res
+    """
+    The 'Isolated Chamber' Bridge. 
+    Runs the async scraper in a completely separate thread 
+    to prevent anyio/starlette loop collisions on Streamlit Cloud.
+    """
+    def wrapper():
+        # Create a brand new loop for this specific worker thread
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            # nest_asyncio is still helpful here just in case
+            import nest_asyncio
+            nest_asyncio.apply()
+            return new_loop.run_until_complete(fn(*args, **kwargs))
+        finally:
+            new_loop.close()
 
-    try:
-        loop = asyncio.get_event_loop()
-        return loop.run_until_complete(fn(*args, **kwargs))
-    except RuntimeError:
-        return asyncio.run(fn(*args, **kwargs))
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(wrapper)
+        return future.result()
     
     
 
