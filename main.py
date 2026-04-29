@@ -67,7 +67,7 @@ def render_sidebar():
         example_prompts = [
              """Objective: Act as an Intelligence Analyst for the AMZN desk. We need a tactical synthesis of Amazon's current AI distribution strategy.
 
-            Instructions: > 1. Pull the latest headlines from https://techcrunch.com/tag/amazon/. 2. Focus specifically on "AWS Bedrock," "OpenAI," and "Codex" integrations. 3. Generate a table of the findings including: Headline, Strategic Impact, and Detected Sentiment. 4. Synthesize a final "Executive Brief" explaining if Amazon is successfully out-positioning Microsoft in the AI infrastructure war.""", 
+            Instructions: > 1. Pull the latest 5 headlines from https://techcrunch.com/tag/amazon/. 2. Focus specifically on "AWS Bedrock," "OpenAI," and "Codex" integrations. 3. Generate a table of the findings including: Headline, Strategic Impact, and Detected Sentiment. 4. Synthesize a final "Executive Brief" explaining if Amazon is successfully out-positioning Microsoft in the AI infrastructure war.""", 
         ]
         for ex in example_prompts:
             st.code(ex, language=None)
