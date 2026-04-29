@@ -30,30 +30,13 @@ def install_package(package):
         subprocess.check_call([sys.executable, "-m", "pip", "install", package])
         
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
+import nest_asyncio
 
 def run_sync_scraper(fn, *args, **kwargs):
-    """
-    The 'Isolated Chamber' Bridge. 
-    Runs the async scraper in a completely separate thread 
-    to prevent anyio/starlette loop collisions on Streamlit Cloud.
-    """
-    def wrapper():
-        # Create a brand new loop for this specific worker thread
-        new_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(new_loop)
-        try:
-            # nest_asyncio is still helpful here just in case
-            import nest_asyncio
-            nest_asyncio.apply()
-            return new_loop.run_until_complete(fn(*args, **kwargs))
-        finally:
-            new_loop.close()
-
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(wrapper)
-        return future.result()
-    
+    """Stable bridge for Python 3.12."""
+    nest_asyncio.apply()
+    loop = asyncio.get_event_loop()
+    return loop.run_until_complete(fn(*args, **kwargs))    
     
 
 def get_skill_name(task_description: str) -> str:
