@@ -222,14 +222,7 @@ def universal_scraper(url, task_query, max_depth=1, fields=None, label_context=N
             # Added flags for Streamlit Cloud stability
             browser = p.chromium.launch(
                 executable_path=exe_path,
-                headless=True,
-                args=["--no-sandbox",
-                "--disable-setuid-sandbox", 
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--no-zygote",
-                "--single-process",
-                ]
+                headless=True
             )
             
             page = browser.new_page(user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36')
@@ -666,59 +659,63 @@ import platform
 def ensure_packages(package_list):
     """
     Installs missing packages safely and handles Playwright's binary requirements.
-    Optimized for Streamlit Cloud (/mount/src/...) and Local environments.
+    Optimized for Streamlit Cloud and Local environments.
     """
+    import os, sys, subprocess
     failed_packages = []
     
     # 1. Determine the persistent browser path
-    # On Streamlit, we want a fixed path: /mount/src/bi-agent-v2/pw-browsers
-    # On Local, we use a 'pw-browsers' folder in your current directory
     if os.path.exists("/mount/src/bi-agent-v2"):
         base_pw_path = "/mount/src/bi-agent-v2/pw-browsers"
     else:
         base_pw_path = os.path.join(os.getcwd(), "pw-browsers")
 
+    # 2. Lock the environment variable globally at start
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = base_pw_path
+
     for package in package_list:
-        # Normalize the name for the __import__ check
         import_name = package.replace('-', '_')
         if package.lower() == "beautifulsoup4": import_name = "bs4"
         if package.lower() == "scikit-learn": import_name = "sklearn"
         if package.lower() == "pyyaml": import_name = "yaml"
 
+        # Check if library is installed
+        is_installed = True
         try:
-            # Check if package is already available
             __import__(import_name)
         except ImportError:
+            is_installed = False
             try:
                 print(f"📦 System: Installing missing dependency: {package}...")
                 subprocess.check_call([sys.executable, "-m", "pip", "install", package, "--quiet"])
-                
-                # --- THE PLAYWRIGHT SPECIAL CASE ---
-                if package.lower() == "playwright":
-                    print(f"🚀 Initializing Playwright in: {base_pw_path}")
+                is_installed = True
+            except Exception as e:
+                print(f"❌ System: Failed to install {package}: {e}")
+                failed_packages.append(package)
+
+        # --- THE PLAYWRIGHT BINARY CHECK ---
+        # We run this if the package was just installed OR if the browser folder is empty
+        if package.lower() == "playwright" and is_installed:
+            # Check if the specific versioned shell folder exists
+            expected_bin = os.path.join(base_pw_path, "chromium_headless_shell-1217")
+            if not os.path.exists(expected_bin):
+                try:
+                    print(f"🚀 Preparing Playwright binaries in: {base_pw_path}")
                     os.makedirs(base_pw_path, exist_ok=True)
                     
-                    # Update the current process environment immediately
-                    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = base_pw_path
-    
                     env = os.environ.copy()
                     env["PLAYWRIGHT_BROWSERS_PATH"] = base_pw_path
     
-                    # CRITICAL: Install chromium AND chromium-headless-shell
-                    # This ensures the shell binary exists for our scraper's specific pathing
-                    print("⬇️ Downloading Chromium & Headless Shell...")
+                    # Install ONLY the headless shell to avoid apt-get dependency conflicts
+                    print("⬇️ Downloading Chromium Headless Shell...")
                     subprocess.check_call(
-                        [sys.executable, "-m", "playwright", "install", "chromium", "chromium-headless-shell"], 
+                        [sys.executable, "-m", "playwright", "install", "chromium-headless-shell"], 
                         env=env
                     )
                     print("✅ Playwright binaries prepared.")
-
-            except subprocess.CalledProcessError as e:
-                print(f"❌ System: Failed to install {package} (Exit code: {e.returncode})")
-                failed_packages.append(package)
-            except Exception as e:
-                print(f"⚠️ System: Unexpected error installing {package}: {e}")
-                failed_packages.append(package)
+                except Exception as e:
+                    print(f"⚠️ System: Error installing Playwright binaries: {e}")
+                    failed_packages.append(f"{package}-binaries")
                 
     return failed_packages
 
