@@ -21,7 +21,7 @@ import shutil
 # --- UTILITY FUNCTIONS ---
 
 def verify_installations():
-    """Checks if the binaries actually exist in the OS path."""
+    """Checks if the binaries actually exist in the local project path."""
     st.subheader("🕵️ Global System Audit")
     
     # 1. Check Playwright CLI
@@ -31,38 +31,46 @@ def verify_installations():
     else:
         st.error("❌ Playwright CLI NOT found in PATH")
 
-    # 2. Check Chromium
-    # Playwright usually hides chromium in ~/.cache/ms-playwright/
-    # but we can check the general system path too
-    chromium_path = shutil.which("chromium") or shutil.which("chromium-browser")
-    if chromium_path:
-        st.success(f"✅ System Chromium found at: `{chromium_path}`")
+    # 2. Check for the LOCAL Playwright internal folder
+    # We check our custom path instead of the system cache
+    local_pw_path = os.path.join(os.getcwd(), "pw-browsers")
+    
+    if os.path.exists(local_pw_path):
+        st.success(f"✅ Local Browser folder found: `{local_pw_path}`")
+        try:
+            # Look inside the folder to see if chromium actually downloaded
+            browsers = os.listdir(local_pw_path)
+            st.write(f"Contents of local browser cache: {browsers}")
+            if any("chromium" in b for b in browsers):
+                st.info("🎯 Chromium binary appears to be present.")
+            else:
+                st.warning("⚠️ Folder exists but Chromium sub-folder is missing.")
+        except Exception as e:
+            st.error(f"Could not list directory: {e}")
     else:
-        st.warning("⚠️ System Chromium not in PATH (Standard for Playwright-only installs)")
-
-    # 3. Check for the Playwright internal folder
-    home = os.path.expanduser("~")
-    pw_cache = os.path.join(home, ".cache", "ms-playwright")
-    if os.path.exists(pw_cache):
-        st.success(f"✅ Playwright Browser Cache folder exists: `{pw_cache}`")
-        browsers = os.listdir(pw_cache)
-        st.write(f"Installed browsers: {browsers}")
-    else:
-        st.error("❌ ms-playwright cache folder is MISSING.")
+        st.error(f"❌ Local browser folder is MISSING at: `{local_pw_path}`")
 
 def run_install():
-    """Runs the heavy lifting install command."""
-    st.info("🚀 Starting Playwright & Chromium installation...")
+    """Runs the install command targeting a local project folder."""
+    st.info("🚀 Starting Local-Folder Playwright Installation...")
+    
+    # Define the local path
+    local_pw_path = os.path.join(os.getcwd(), "pw-browsers")
+    
+    # Set the environment variable for the subprocess
+    custom_env = os.environ.copy()
+    custom_env["PLAYWRIGHT_BROWSERS_PATH"] = local_pw_path
+    
     try:
-        # --with-deps is key; it tries to fix the Linux library issues on the fly
+        # We omit --with-deps to avoid the sudo/root password wall
         process = subprocess.Popen(
             ["playwright", "install", "chromium"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True
+            text=True,
+            env=custom_env
         )
         
-        # Stream the output to the UI so we don't sit in silence
         output_placeholder = st.empty()
         full_log = ""
         for line in process.stdout:
@@ -71,12 +79,14 @@ def run_install():
             
         process.wait()
         if process.returncode == 0:
-            st.success("✅ Installation Finished Successfully!")
+            st.success(f"✅ Installation Finished! Browsers should be in: `{local_pw_path}`")
+            st.balloons()
         else:
             st.error(f"❌ Installation failed with code {process.returncode}")
+            st.info("If this failed with a 'Read-only file system' error, Streamlit has locked the directory.")
     except Exception as e:
         st.exception(e)
-
+        
 # --- STREAMLIT UI COMPONENTS ---
 
 st.title("🛠️ Navi System Diagnostics")
