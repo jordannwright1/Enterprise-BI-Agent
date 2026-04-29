@@ -140,41 +140,34 @@ print(f"DEBUG: OS is {platform.system()}, using path: {base_pw_path}")
 def get_executable_path():
     import platform
     import os
-
-    # 1. Check if we are on Streamlit Cloud
-    # Streamlit Cloud always has this specific root directory
+    
     if os.path.exists("/mount/src"):
-        base_pw_path = "/mount/src/bi-agent-v2/pw-browsers"
-        is_cloud = True
+        base_path = "/mount/src/bi-agent-v2/pw-browsers"
     else:
-        # LOCAL MAC PATH
-        # This uses your actual project folder on your Mac
-        base_pw_path = os.path.join(os.getcwd(), "pw-browsers")
-        is_cloud = False
+        base_path = os.path.join(os.getcwd(), "pw-browsers")
 
-    # 2. Determine Folder Name based on OS
+    # Dynamic folder lookup: Find the folder that starts with 'chromium-'
+    try:
+        subfolders = [f for f in os.listdir(base_path) if f.startswith("chromium-")]
+        if not subfolders:
+            return None
+        # Use the most recent one if multiple exist
+        version_folder = sorted(subfolders, reverse=True)[0]
+    except Exception:
+        return None
+
     sys_platform = platform.system().lower()
-    machine = platform.machine().lower()
-
-    if is_cloud:
-        folder_name = "chrome-headless-shell-linux64"
-    elif sys_platform == "darwin":
-        suffix = "arm64" if "arm" in machine or "aarch" in machine else "x64"
-        folder_name = f"chrome-headless-shell-mac-{suffix}"
+    
+    # Path inside the standard Playwright 'chromium' folder
+    if sys_platform == "darwin":
+        binary_path = "chrome-mac/Chromium.app/Contents/MacOS/Chromium"
+    elif sys_platform == "linux":
+        binary_path = "chrome-linux/chrome"
     else:
-        folder_name = "chrome-headless-shell-linux64"
+        binary_path = "chrome-win/chrome.exe"
 
-    # 3. Construct the path
-    binary_name = "chrome-headless-shell"
-    
-    path = os.path.join(
-        base_pw_path, 
-        "chromium_headless_shell-1217", 
-        folder_name, 
-        binary_name
-    )
-    
-    return path
+    return os.path.join(base_path, version_folder, binary_path)
+
 
 
 
@@ -694,11 +687,12 @@ def ensure_packages(package_list):
                 failed_packages.append(package)
 
         # --- THE PLAYWRIGHT BINARY CHECK ---
-        # We run this if the package was just installed OR if the browser folder is empty
         if package.lower() == "playwright" and is_installed:
-            # Check if the specific versioned shell folder exists
-            expected_bin = os.path.join(base_pw_path, "chromium_headless_shell-1217")
-            if not os.path.exists(expected_bin):
+            # Check if ANY chromium folder exists in the path
+            # This makes the check less brittle than looking for a specific version number
+            has_browser = any("chromium" in f for f in os.listdir(base_pw_path)) if os.path.exists(base_pw_path) else False
+            
+            if not has_browser:
                 try:
                     print(f"🚀 Preparing Playwright binaries in: {base_pw_path}")
                     os.makedirs(base_pw_path, exist_ok=True)
@@ -706,10 +700,10 @@ def ensure_packages(package_list):
                     env = os.environ.copy()
                     env["PLAYWRIGHT_BROWSERS_PATH"] = base_pw_path
     
-                    # Install ONLY the headless shell to avoid apt-get dependency conflicts
-                    print("⬇️ Downloading Chromium Headless Shell...")
+                    # Switch to 'chromium' target for universal compatibility
+                    print("⬇️ Downloading Chromium Binary...")
                     subprocess.check_call(
-                        [sys.executable, "-m", "playwright", "install", "chromium-headless-shell"], 
+                        [sys.executable, "-m", "playwright", "install", "chromium"], 
                         env=env
                     )
                     print("✅ Playwright binaries prepared.")
