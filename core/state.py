@@ -49,7 +49,7 @@ import base64
 import re
 import matplotlib.pyplot as plt
 import pandas as pd
-from ddgs import DDGS
+from duckduckgo_search import DDGS
 
 class NaviEngine:
     @staticmethod
