@@ -108,7 +108,7 @@ def save_memory_node(state: NaviState):
     return {}
 
 
-def universal_scraper(url, task_query, max_depth=1):
+def universal_scraper(url, task_query, max_depth=1, fields=None, label_context=None):
     from bs4 import BeautifulSoup
     import json, re, traceback
     from collections import Counter
@@ -129,7 +129,6 @@ def universal_scraper(url, task_query, max_depth=1):
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page(user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36')
-            
             print(f"[RECON] Landing: {target_url}")
             page.goto(target_url, wait_until='domcontentloaded', timeout=30000)
             
@@ -178,23 +177,17 @@ def universal_scraper(url, task_query, max_depth=1):
                             classes = curr.get('class', [])
                             if classes:
                                 c_str = " ".join(classes).lower()
-                                
-                                # HEAVY PENALTY: Avoid carousels and hero banners
                                 if any(x in c_str for x in ['carousel', 'hero', 'slider', 'featured', 'ad-']):
                                     continue
-                                
-                                # GRID BIAS: Boost classes that look like standard product units
                                 weight = 1
                                 if any(x in c_str for x in ['item', 'card', 'product', 'sku', 'cell', 'grid']):
                                     weight = 5
-                                
                                 clean_cls_list = [c for c in classes if not re.search(r'\d', c) and len(c) > 3]
                                 for c in clean_cls_list:
                                     parent_class_counter[f".{c}"] += weight
 
-                # Pick the most frequent 'Grid' class
                 potential_selectors = parent_class_counter.most_common(5)
-                best_selector = potential_selectors[0][0] if potential_selectors else ".sku-item" # Fallback
+                best_selector = potential_selectors[0][0] if potential_selectors else ".sku-item"
                 
                 print(f"[TRACE] Depth {current_depth} Winner Selector: {best_selector}")
 
@@ -203,15 +196,14 @@ def universal_scraper(url, task_query, max_depth=1):
                 for item in items:
                     if len(raw_data) >= 15: break
                     
-                    # Extract all text lines within the item to find patterns
                     inner_text_lines = [t.strip() for t in item.inner_text().split('\n') if t.strip()]
                     if not inner_text_lines: continue
 
-                    # 1. Product Name: Usually the longest string in the top 5 lines
+                    # 1. Product Name Logic (Title)
                     potential_titles = inner_text_lines[:6]
                     title = max(potential_titles, key=len) if potential_titles else "N/A"
                     
-                    # 2. Price: Look for the first line matching the $ price regex
+                    # 2. Price Logic
                     price = "N/A"
                     for line in inner_text_lines:
                         match = price_rex.search(line)
@@ -219,20 +211,44 @@ def universal_scraper(url, task_query, max_depth=1):
                             price = match.group()
                             break
                     
-                    # 3. Savings: Look for the keyword "Save"
+                    # 3. Savings Logic (Deals)
                     savings = "N/A"
                     for line in inner_text_lines:
                         if "Save" in line:
                             savings = line
                             break
 
+                    # --- DYNAMIC MAPPING (The Fix) ---
                     if len(title) > 20 and not noise_rex.search(title) and title.lower() not in seen:
-                        raw_data.append({
-                            "Product Name": title,
-                            "Price": price,
-                            "Deals": savings
-                        })
+                        # 1. Access local scope variables (or use defaults if undefined)
+                        # We try to get 'fields' and 'label_context' from the function arguments
+                        try:
+                            active_fields = fields if 'fields' in locals() and fields else ["Product Name", "Price", "Deals"]
+                            active_label = label_context if 'label_context' in locals() else ""
+                        except NameError:
+                            active_fields = ["Product Name", "Price", "Deals"]
+                            active_label = ""
+
+                        entry = {}
+                        
+                        # 2. Tag with the source label if provided
+                        if active_label:
+                            entry["context_source"] = active_label
+
+                        # 3. Map the extracted data to the keys provided in 'fields'
+                        # First field = Title, Second = Price, Third = Deals
+                        if len(active_fields) >= 1: entry[active_fields[0]] = title
+                        if len(active_fields) >= 2: entry[active_fields[1]] = price
+                        if len(active_fields) >= 3: entry[active_fields[2]] = savings
+                        
+                        # Fill any extra field requests with N/A
+                        for extra in active_fields[3:]:
+                            entry[extra] = "N/A"
+
+                        raw_data.append(entry)
                         seen.add(title.lower())
+                
+                current_depth += 1
 
                 # --- PHASE 4: NAVIGATION ---
                 if current_depth < max_depth and len(raw_data) < 10:
@@ -250,8 +266,21 @@ def universal_scraper(url, task_query, max_depth=1):
             return {"mode": "error", "data": f"No products extracted from {best_selector}. Selector might be too broad."}
 
         # Build Markdown Table
-        headers = ["Product Name", "Price", "Deals"]
-        table = ["| " + " | ".join(headers) + " |", "| " + " | ".join([":---"] * len(headers)) + " |"]
+        # 1. Dynamically identify headers from the local raw_data list
+        dynamic_keys = []
+        if raw_data and isinstance(raw_data, list):
+            for item in raw_data:
+                if isinstance(item, dict):
+                    for k in item.keys():
+                        if k not in dynamic_keys and k not in ["source_label", "context_source"]:
+                            dynamic_keys.append(k)
+        
+        # 2. Fallback to your original headers if no keys are found
+        headers = dynamic_keys if dynamic_keys else ["Product Name", "Price", "Deals"]
+        
+        # 3. Standard table initialization using the derived headers
+        table = ["| " + " | ".join([h.replace('_', ' ').title() for h in headers]) + " |", 
+                 "| " + " | ".join([":---"] * len(headers)) + " |"]
         for r in raw_data:
             table.append("| " + " | ".join([str(r.get(h, "N/A")).replace("\n", " ") for h in headers]) + " |")
         
@@ -309,6 +338,9 @@ def universal_interpreter(recipe, scraper_fn):
         results = []
         seen_titles = set()
         
+        # 1. Normalize whitelist for comparison
+        field_whitelist = [f.lower() for f in fields] if fields else []
+        
         actual_content = ""
         if isinstance(markdown_text, dict):
             actual_content = markdown_text.get('data', '')
@@ -317,7 +349,6 @@ def universal_interpreter(recipe, scraper_fn):
             if actual_content.strip().startswith('{'):
                 try: 
                     decoded = json.loads(actual_content)
-                    # Support multiple common response keys
                     actual_content = decoded.get('data', decoded.get('result', decoded.get('rows', '')))
                 except: pass
 
@@ -340,26 +371,48 @@ def universal_interpreter(recipe, scraper_fn):
                 if not cols or len(cols) < 2: continue
                 
                 extracted = {}
+                
+                # 2. Inject label_context to track data provenance
+                if label_context:
+                    extracted['context_source'] = label_context
+
+                # 3. Cell-level extraction (for bolded key-value pairs)
                 for col_val in cols:
                     sub_matches = re.findall(r"\*\*(.*?)\*\*[:\s]+(.*?)(?=<br>| \*\*|$)", col_val)
                     for s_key, s_val in sub_matches:
-                        extracted[clean_key(s_key)] = s_val.strip()
+                        key_name = clean_key(s_key).lower()
+                        # Apply whitelist filtering
+                        if not field_whitelist or key_name in field_whitelist:
+                            extracted[key_name] = s_val.strip()
                 
+                # 4. Table column mapping
                 for i, k in enumerate(headers):
-                    if i < len(cols) and k not in extracted:
-                        extracted[k] = cols[i]
+                    key_name = k.lower()
+                    if i < len(cols) and key_name not in extracted:
+                        # NEW: If fields is provided, strict enforcement
+                        if field_whitelist:
+                            if key_name in field_whitelist:
+                                extracted[key_name] = cols[i]
+                        else:
+                            # If no fields provided, keep original behavior (capture all)
+                            extracted[key_name] = cols[i]
 
-                page_title = extracted.get("product_name", extracted.get("title", extracted.get("name", ""))).lower()
-                if any(meta in page_title for meta in ["portal:", "help:", "special:", "talk:"]):
+                # Filtering and Deduplication
+                p_title = str(extracted.get("title", extracted.get("name", extracted.get("product_name", "")))).lower()
+                if any(meta in p_title for meta in ["portal:", "help:", "special:", "talk:"]):
                     continue
 
-                unique_id = page_title if page_title else str(extracted)
+                unique_id = p_title if p_title else str(extracted)
                 if unique_id not in seen_titles:
-                    results.append(extracted)
-                    seen_titles.add(unique_id)
+                    # Only append if we actually extracted relevant fields
+                    if len(extracted) > (1 if label_context else 0):
+                        results.append(extracted)
+                        seen_titles.add(unique_id)
                     
         except Exception as e:
-            logs.append(f"⚠️ Scavenge Error: {str(e)[:50]}")
+            # Safely check for logs list before appending
+            if 'logs' in globals() or 'logs' in locals():
+                logs.append(f"⚠️ Scavenge Error: {str(e)[:50]}")
         return results
 
     # --- MAIN RECIPE LOOP ---
@@ -382,7 +435,14 @@ def universal_interpreter(recipe, scraper_fn):
                 logs.append(f"🔍 Search required for: {query}")
                 continue
             
-            raw_payload = scraper_fn(url.split('#')[0], params.get('task_query', 'Extract details'))
+            # Pass all 5 arguments so the Scraper knows exactly what to do
+            raw_payload = scraper_fn(
+                url.split('#')[0], 
+                params.get('task_query', 'Extract details'),
+                params.get('max_depth', 0),           # The 3rd param (already in your signature)
+                fields=params.get('fields', []),      # The 4th param (The Ghost Buster)
+                label_context=params.get('label', '') # The 5th param (The Source Tagger)
+            )
             new_items = parse_markdown_content(raw_payload, params.get('fields', []), label)
             
             if label not in storage: storage[label] = []
