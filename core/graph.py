@@ -141,33 +141,49 @@ def get_executable_path():
     import platform
     import os
     
+    # 1. Determine Root
     if os.path.exists("/mount/src"):
         base_path = "/mount/src/bi-agent-v2/pw-browsers"
     else:
         base_path = os.path.join(os.getcwd(), "pw-browsers")
 
-    # Dynamic folder lookup: Find the folder that starts with 'chromium-'
+    if not os.path.exists(base_path):
+        return None
+
+    # 2. Dynamic Folder Lookup
+    # This finds 'chromium-1091' or 'chromium_headless_shell-1217' automatically
     try:
-        subfolders = [f for f in os.listdir(base_path) if f.startswith("chromium-")]
+        subfolders = [f for f in os.listdir(base_path) if f.startswith("chromium")]
         if not subfolders:
             return None
-        # Use the most recent one if multiple exist
+        # Pick the most recent version folder
         version_folder = sorted(subfolders, reverse=True)[0]
     except Exception:
         return None
 
+    full_version_path = os.path.join(base_path, version_folder)
     sys_platform = platform.system().lower()
-    
-    # Path inside the standard Playwright 'chromium' folder
-    if sys_platform == "darwin":
-        binary_path = "chrome-mac/Chromium.app/Contents/MacOS/Chromium"
-    elif sys_platform == "linux":
-        binary_path = "chrome-linux/chrome"
+
+    # 3. Pathing within the Playwright folder
+    # Playwright uses different internal structures for 'shell' vs 'full chromium'
+    if "headless_shell" in version_folder:
+        binary_name = "chrome-headless-shell"
+        if sys_platform == "darwin":
+            # Mac Shell
+            suffix = "mac-arm64" if "arm" in platform.machine().lower() else "mac-x64"
+            return os.path.join(full_version_path, f"chrome-headless-shell-{suffix}", binary_name)
+        else:
+            # Linux Shell
+            return os.path.join(full_version_path, "chrome-headless-shell-linux64", binary_name)
     else:
-        binary_path = "chrome-win/chrome.exe"
-
-    return os.path.join(base_path, version_folder, binary_path)
-
+        # Full Chromium Install (Fallback)
+        if sys_platform == "darwin":
+            return os.path.join(full_version_path, "chrome-mac", "Chromium.app", "Contents", "MacOS", "Chromium")
+        elif sys_platform == "linux":
+            return os.path.join(full_version_path, "chrome-linux", "chrome")
+        else:
+            return os.path.join(full_version_path, "chrome-win", "chrome.exe")
+        
 
 
 
