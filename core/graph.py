@@ -35,18 +35,28 @@ import inspect
 
 def run_sync_scraper(fn, *args, **kwargs):
     nest_asyncio.apply()
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
     
-    # Check if we were passed a coroutine object instead of a function
-    if inspect.iscoroutine(fn):
-        return asyncio.get_event_loop().run_until_complete(fn)
-    
-    # If it's a function, call it to get the coroutine
+    # Logic to handle if we passed a function or a coroutine
     if inspect.iscoroutinefunction(fn):
         coro = fn(*args, **kwargs)
-        return asyncio.get_event_loop().run_until_complete(coro)
+    elif inspect.iscoroutine(fn):
+        coro = fn
+    else:
+        # It's a regular sync function, just return it
+        return fn(*args, **kwargs)
+
+    # If the loop is already running, we can't use run_until_complete
+    if loop.is_running():
+        # Use a task instead
+        return asyncio.ensure_future(coro)
     
-    # Fallback for standard synchronous functions
-    return fn(*args, **kwargs)    
+    return loop.run_until_complete(coro)
+
 
 def get_skill_name(task_description: str) -> str:
     """Uses the pro LLM to generate a creative, snake_case codename."""
