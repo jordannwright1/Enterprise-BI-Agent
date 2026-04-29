@@ -151,9 +151,14 @@ def universal_scraper(url, task_query, max_depth=1, fields=None, label_context=N
         
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True,
-            
+            args=[
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu"  # Servers don't have GPUs, this saves memory
+            ]
                                         
-            )
+        )
             page = browser.new_page(user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36')
             print(f"[RECON] Landing: {target_url}")
             page.goto(target_url, wait_until='domcontentloaded', timeout=30000)
