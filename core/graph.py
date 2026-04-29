@@ -15,10 +15,11 @@ import sys
 import groq
 from importlib import metadata
 import sqlite3
+from langchain_huggingface import HuggingFaceEmbeddings
 import ast
 from core.database import get_skill, save_skill, init_db
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
+embeddings_model = HuggingFaceEmbeddings(model_name="BAAI/bge-large-en-v1.5")
 
 def install_package(package):
     try:
