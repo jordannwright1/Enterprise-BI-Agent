@@ -15,6 +15,7 @@ langchain-huggingface
 sentence-transformers
 pinecone
 pinecone-client
+torchvision
 
 # --- Scraping & Search ---
 beautifulsoup4
