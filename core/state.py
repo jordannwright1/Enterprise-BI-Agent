@@ -6,7 +6,7 @@ import base64
 import re
 import matplotlib.pyplot as plt
 import pandas as pd
-from ddgs import DDGS
+from duckduckgo_search import DDGS
 
 class NaviState(TypedDict):
     # --- Core Communication ---
@@ -149,6 +149,3 @@ class NaviEngine:
         plt.savefig(buf, format='png', bbox_inches='tight')
         plt.close()
         return base64.b64encode(buf.getvalue()).decode('utf-8')
-
-
-
