@@ -713,7 +713,8 @@ def planner_node(state: NaviState):
 
         ### DECISION LOGIC:
         - If you see names of products/articles that match the objective: You MUST respond with COMPLETE.
-        - Only respond with CONTINUE if the data is genuinely empty, 100% unrelated (e.g., only captured the footer), or a "403 Forbidden" error.
+        -If the information is found in the content of the {final_ans_raw} you MUST respond COMPLETE.
+        - ONLY respond with CONTINUE if the data is genuinely empty, 100% unrelated (e.g., only captured the footer), or a "403 Forbidden" error. If there is data you MUST respond with COMPLETE
 
         Respond with your brief analysis, then end with exactly one word: COMPLETE or CONTINUE.
         """
