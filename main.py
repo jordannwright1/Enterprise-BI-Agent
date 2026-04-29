@@ -1,4 +1,4 @@
-import streamlit as st
+
 import os
 from dotenv import load_dotenv
 import uuid
@@ -11,12 +11,20 @@ import base64
 from PIL import Image
 import io
 import sys
-
-
-import streamlit as st
 import subprocess
 import os
 import shutil
+import streamlit as st
+import asyncio
+import nest_asyncio
+
+try:
+    loop = asyncio.get_event_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+nest_asyncio.apply()
 
 # --- UTILITY FUNCTIONS ---
 
