@@ -144,7 +144,9 @@ def universal_scraper(url, task_query, max_depth=1, fields=None, label_context=N
     from playwright.sync_api import sync_playwright
     
     result = {"mode": "structured_blocks", "status": "initializing", "data": ""}
-
+    import os
+    browser_path = "/mount/src/bi-agent-v2/pw-browsers"
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = browser_path
     try:
         target_url = url.strip()
         if not target_url.startswith('http'): target_url = 'https://' + target_url
