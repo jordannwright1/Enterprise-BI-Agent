@@ -116,12 +116,6 @@ def universal_scraper(url, task_query, max_depth=1, fields=None, label_context=N
     
     result = {"mode": "structured_blocks", "status": "initializing", "data": ""}
 
-    def strict_json_extract(text):
-        try:
-            match = re.search(r'\{.*\}', text, re.DOTALL)
-            return json.loads(match.group()) if match else {}
-        except: return {}
-
     try:
         target_url = url.strip()
         if not target_url.startswith('http'): target_url = 'https://' + target_url
@@ -706,14 +700,11 @@ def planner_node(state: NaviState):
         ### CRITICAL INSTRUCTION:
         You are a Semantic Data Auditor. Your job is NOT to grade the formatting, but to verify if the 'Gold' (the actual requested information) is present in the text.
         
-        1. **READ THROUGH THE NOISE**: Website scrapers often capture 'ghost text' like "Rating 4.7" or "Sponsored." IGNORE these artifacts.
-        2. **SEARCH FOR PAYLOAD**: Look deeply at the "Product Name," "Price," or "Article Title" fields. If you see real-world entity names (e.g., "MacBook," "Xbox," "OpenAI") and their associated data, the mission is successful.
-        3. **SEMANTIC COMPLETENESS**: If the requested information is "there or mostly there," even if it is mixed with noise or incomplete fragments, you MUST accept it. 
-        4. **FORMAT AGNOSTIC**: Do not reject the data because it is in a list, a messy JSON, or a broken table. Content is king.
+        **SEMANTIC COMPLETENESS**: If the requested information is "there or mostly there," even if it is mixed with noise or incomplete fragments, you MUST accept it. 
+        **FORMAT AGNOSTIC**: Do not reject the data because it is in a list, a messy JSON, or a broken table. Content is king.
 
         ### DECISION LOGIC:
-        - If you see names of products/articles that match the objective: You MUST respond with COMPLETE.
-        -If the information is found in the content of the {final_ans_raw} you MUST respond COMPLETE.
+        -If the information is found in the content of the {final_ans_raw} you MUST respond COMPLETE.  It is up to you to find this information even if it's buried in the text.  READ through ALL of the text in {final_ans_raw} before your response and if data is present you MUST respond COMPLETE
         - ONLY respond with CONTINUE if the data is genuinely empty, 100% unrelated (e.g., only captured the footer), or a "403 Forbidden" error. If there is data you MUST respond with COMPLETE
 
         Respond with your brief analysis, then end with exactly one word: COMPLETE or CONTINUE.
