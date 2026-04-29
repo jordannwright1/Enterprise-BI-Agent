@@ -12,6 +12,87 @@ from PIL import Image
 import io
 import sys
 
+
+import streamlit as st
+import subprocess
+import os
+import shutil
+
+# --- UTILITY FUNCTIONS ---
+
+def verify_installations():
+    """Checks if the binaries actually exist in the OS path."""
+    st.subheader("🕵️ Global System Audit")
+    
+    # 1. Check Playwright CLI
+    playwright_path = shutil.which("playwright")
+    if playwright_path:
+        st.success(f"✅ Playwright CLI found at: `{playwright_path}`")
+    else:
+        st.error("❌ Playwright CLI NOT found in PATH")
+
+    # 2. Check Chromium
+    # Playwright usually hides chromium in ~/.cache/ms-playwright/
+    # but we can check the general system path too
+    chromium_path = shutil.which("chromium") or shutil.which("chromium-browser")
+    if chromium_path:
+        st.success(f"✅ System Chromium found at: `{chromium_path}`")
+    else:
+        st.warning("⚠️ System Chromium not in PATH (Standard for Playwright-only installs)")
+
+    # 3. Check for the Playwright internal folder
+    home = os.path.expanduser("~")
+    pw_cache = os.path.join(home, ".cache", "ms-playwright")
+    if os.path.exists(pw_cache):
+        st.success(f"✅ Playwright Browser Cache folder exists: `{pw_cache}`")
+        browsers = os.listdir(pw_cache)
+        st.write(f"Installed browsers: {browsers}")
+    else:
+        st.error("❌ ms-playwright cache folder is MISSING.")
+
+def run_install():
+    """Runs the heavy lifting install command."""
+    st.info("🚀 Starting Playwright & Chromium installation...")
+    try:
+        # --with-deps is key; it tries to fix the Linux library issues on the fly
+        process = subprocess.Popen(
+            ["playwright", "install", "chromium", "--with-deps"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True
+        )
+        
+        # Stream the output to the UI so we don't sit in silence
+        output_placeholder = st.empty()
+        full_log = ""
+        for line in process.stdout:
+            full_log += line
+            output_placeholder.code(full_log)
+            
+        process.wait()
+        if process.returncode == 0:
+            st.success("✅ Installation Finished Successfully!")
+        else:
+            st.error(f"❌ Installation failed with code {process.returncode}")
+    except Exception as e:
+        st.exception(e)
+
+# --- STREAMLIT UI COMPONENTS ---
+
+st.title("🛠️ Navi System Diagnostics")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    if st.button("🔍 Verify Installations"):
+        verify_installations()
+
+with col2:
+    if st.button("📥 Force Install Playwright/Chromium"):
+        run_install()
+
+st.divider()
+
 # --- 1. CONFIGURATION & ENVIRONMENT ---
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 if ROOT_DIR not in sys.path:
