@@ -209,19 +209,19 @@ def universal_scraper(url, task_query, max_depth=1, fields=None, label_context=N
                 executable_path=exe_path,
                 headless=True,
                 args=[
-                    "--no-sandbox",                # Essential for Linux containers
-                    "--disable-setuid-sandbox",     # Extra layer of sandbox bypass
-                    "--disable-dev-shm-usage",      # CRITICAL: Uses /tmp instead of /dev/shm (which is tiny on Streamlit)
-                    "--disable-gpu",                # Prevents trying to use hardware acceleration
-                    "--no-zygote",                  # Stops the browser from creating "zombie" processes
-                    "--single-process",             # Keeps everything in one thread (very important for Streamlit)
-                ]
-            )
+                    "--no-sandbox",              # 1. Essential for rootless containers
+                    "--disable-setuid-sandbox",  # 2. Secondary sandbox bypass
+                    "--disable-dev-shm-usage",   # 3. USE THIS: Forces /tmp instead of RAM (Prevents the crash)
+                    "--single-process",          # 4. CRITICAL: Prevents PID limit hits
+                    "--no-zygote",               # 5. Stops background process forking
+                    "--disable-gpu",             # 6. Stops search for hardware drivers
+                    "--disable-audio-output",    # 7. Stops search for sound drivers
+                    "--disable-software-rasterizer"
+            ]
+        )
             
             # Use a fresh context with a standard desktop User Agent
-            context = browser.new_context(
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            )
+            context = browser.new_context(viewport={'width': 1280, 'height': 800})
             page = context.new_page()
             print(f"[RECON] Landing: {target_url} using {exe_path}")
             
