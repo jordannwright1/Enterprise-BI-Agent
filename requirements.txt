@@ -21,6 +21,7 @@ beautifulsoup4
 playwright
 duckduckgo-search
 requests
+asyncio
 
 # --- Processing ---
 pydantic
