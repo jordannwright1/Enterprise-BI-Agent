@@ -56,7 +56,7 @@ def run_install():
     try:
         # --with-deps is key; it tries to fix the Linux library issues on the fly
         process = subprocess.Popen(
-            ["playwright", "install", "chromium", "--with-deps"],
+            ["playwright", "install", "chromium"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True
